@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dgrijalva/jwt-go"
 	"go.uber.org/zap"
@@ -121,7 +122,7 @@ func TestNewClientWithJWTBearer(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewClientWithJWTBearer(tt.args.isProd, tt.args.instanceURL, tt.args.consumerKey, tt.args.username, tt.args.privateKey, tt.args.logger)
+			_, err := NewClientWithJWTBearer(tt.args.isProd, tt.args.instanceURL, tt.args.consumerKey, tt.args.username, tt.args.privateKey, time.Second, *http.DefaultClient, tt.args.logger)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewClientWithJWTBearer() error = %+v, wantErr %+v", err != nil, tt.wantErr)
 			}
@@ -245,7 +246,7 @@ func TestClient_sendRequest(t *testing.T) {
 
 	testServerBadResFmtBody := []byte(`this_is_in_an_un-understandable_format`)
 	testServerBadResFmtStatusCode := http.StatusInternalServerError
-	var aux APIError
+	var aux ErrorObjects
 	testServerBadResFmtErr := json.Unmarshal(testServerBadResFmtBody, &aux)
 	testServerBadResFmt := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(testServerBadResFmtStatusCode)
@@ -262,7 +263,7 @@ func TestClient_sendRequest(t *testing.T) {
 	]
 	`)
 	testServerErrStatusCode := http.StatusInternalServerError
-	var testServerErrSfErr APIError
+	var testServerErrSfErr ErrorObjects
 	json.Unmarshal(testServerErrBody, &testServerErrSfErr)
 	testServerErr := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(testServerErrStatusCode)
@@ -399,7 +400,7 @@ func TestClient_SendRequest(t *testing.T) {
 
 	testServerBadResFmtStatusCode := http.StatusInternalServerError
 	testServerBadResFmtBody := []byte(`this_is_in_an_un-understandable_format`)
-	var aux APIError
+	var aux ErrorObjects
 	testServerBadResFmtErr := json.Unmarshal(testServerBadResFmtBody, &aux)
 	testServerBadResFmt := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(testServerBadResFmtStatusCode)
@@ -423,7 +424,7 @@ func TestClient_SendRequest(t *testing.T) {
 		}
 	]
 	`)
-	var testServerGetNewTokenErr APIError
+	var testServerGetNewTokenErr ErrorObjects
 	json.Unmarshal(testServerGetNewTokenBody2, &testServerGetNewTokenErr)
 	testServerGetNewToken := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		if req.URL != nil && req.URL.Path == "/services/oauth2/token" {

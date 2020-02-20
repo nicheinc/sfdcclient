@@ -38,7 +38,7 @@ func (e *NewTokenOAuthErr) Error() string {
 /*  Salesforce REST API error response types  */
 /**********************************************/
 
-// APIError represents an error response from salesforce REST API endpoints
+// ErrorObjects represents an error response from salesforce REST API endpoints
 // Example:
 // [
 //     {
@@ -49,9 +49,9 @@ func (e *NewTokenOAuthErr) Error() string {
 // 			]
 //     }
 // ]
-type APIError []ErrorObject
+type ErrorObjects []ErrorObject
 
-func (e *APIError) Error() string {
+func (e *ErrorObjects) Error() string {
 	var str []string
 	if e != nil {
 		for _, e := range *e {

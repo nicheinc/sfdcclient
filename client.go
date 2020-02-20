@@ -17,27 +17,32 @@ import (
 )
 
 type salesforceClient struct {
+	// Underlying http client used for making all HTTP requests to salesforce
+	// note that the configuration of this HTTP client will affect all HTTP
+	// requests done by this struct (including the OAuth requests)
 	client http.Client
 
 	// URL of server where the salesforce organization lives
+	// instanceURL *url.URL
 	instanceURL string
 
 	// Variables needed for the generation and signing of the JWT token
-	rsaPrivateKey *rsa.PrivateKey
-	consumerKey   string
-	username      string
-	authServer    string
+	rsaPrivateKey   *rsa.PrivateKey
+	consumerKey     string
+	username        string
+	authServer      string
+	tokenExpTimeout time.Duration
 
-	// Authorization access token issued by Salesforce
+	// Authentication token issued by Salesforce
 	accessToken      string
 	accessTokenMutex *sync.RWMutex
 
 	logger *zap.Logger
 }
 
-func NewClientWithJWTBearer(sandbox bool, instance, consumerKey, username string, privateKey []byte, logger *zap.Logger) (Client, error) {
+func NewClientWithJWTBearer(sandbox bool, instance, consumerKey, username string, privateKey []byte, tokenExpTimeout time.Duration, httpClient http.Client, logger *zap.Logger) (Client, error) {
 	appClient := salesforceClient{
-		client:           http.Client{},
+		client:           httpClient,
 		instanceURL:      fmt.Sprintf("https://%s.salesforce.com", instance),
 		consumerKey:      consumerKey,
 		username:         username,
@@ -72,9 +77,6 @@ func NewClientWithJWTBearer(sandbox bool, instance, consumerKey, username string
 // This function implements "OAuth 2.0 JWT Bearer Flow for Server-to-Server Integration"
 // see https://help.salesforce.com/articleView?id=remoteaccess_oauth_jwt_flow.htm
 func (c *salesforceClient) setNewAccessToken() error {
-	now := time.Now()
-	expirationDate := now.Add(time.Second * time.Duration(1)).UTC()
-
 	// Create JWT
 	token := jwt.NewWithClaims(
 		jwt.SigningMethodRS256,
@@ -82,7 +84,7 @@ func (c *salesforceClient) setNewAccessToken() error {
 			Issuer:    c.consumerKey,
 			Audience:  c.authServer,
 			Subject:   c.username,
-			ExpiresAt: expirationDate.Unix(),
+			ExpiresAt: time.Now().Add(c.tokenExpTimeout).UTC().Unix(),
 		},
 	)
 	// Sign JWT with the private key
@@ -128,8 +130,6 @@ func (c *salesforceClient) setNewAccessToken() error {
 	c.accessToken = tokenRes.AccessToken
 	c.accessTokenMutex.Unlock()
 
-	fmt.Println(c.accessToken)
-
 	return nil
 }
 
@@ -144,7 +144,7 @@ func (c salesforceClient) SendRequest(ctx context.Context, method, relURL string
 	statusCode, resBody, err := c.sendRequest(ctx, method, url, headers, requestBody)
 	if err != nil {
 		// Check if the error came from salesforce's API
-		if _, ok := err.(*APIError); ok {
+		if _, ok := err.(*ErrorObjects); ok {
 			// If the status code returned is Unauthorized (401)
 			// Presumably, the current client's access token we have has expired,
 			// hence, we attempt to update the client's access token and retry the request once
@@ -200,7 +200,7 @@ func (c salesforceClient) sendRequest(ctx context.Context, method, url string, h
 		return -1, nil, err
 	}
 
-	var errs APIError
+	var errs ErrorObjects
 	switch res.StatusCode {
 	// Salesforce HTTP status codes and error responses:
 	// https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm

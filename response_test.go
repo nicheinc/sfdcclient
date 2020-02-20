@@ -68,10 +68,10 @@ func TestErrorObject_Error(t *testing.T) {
 	}
 }
 
-func TestAPIError_Error(t *testing.T) {
+func TestErrorObjects_Error(t *testing.T) {
 	tests := []struct {
 		name string
-		e    *APIError
+		e    *ErrorObjects
 		want string
 	}{
 		{
@@ -81,12 +81,12 @@ func TestAPIError_Error(t *testing.T) {
 		},
 		{
 			name: "EmptyErrsSlice",
-			e:    &APIError{},
+			e:    &ErrorObjects{},
 			want: "",
 		},
 		{
 			name: "OneErr",
-			e: &APIError{
+			e: &ErrorObjects{
 				ErrorObject{
 					ErrCode: "123",
 					Message: "message",
@@ -97,7 +97,7 @@ func TestAPIError_Error(t *testing.T) {
 		},
 		{
 			name: "MultipleErrs",
-			e: &APIError{
+			e: &ErrorObjects{
 				ErrorObject{
 					ErrCode: "123",
 					Message: "message",
@@ -115,7 +115,7 @@ func TestAPIError_Error(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.e.Error(); got != tt.want {
-				t.Errorf("APIError.Error() = %+v, want %+v", got, tt.want)
+				t.Errorf("ErrorObjects.Error() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
