@@ -1,4 +1,4 @@
-module sfdcclient
+module github.com/nicheinc/sfdcclient
 
 go 1.13
 
