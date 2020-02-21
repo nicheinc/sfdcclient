@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -18,7 +19,6 @@ import (
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
-	"go.uber.org/zap"
 )
 
 var (
@@ -135,10 +135,10 @@ func TestClient_newAccessToken(t *testing.T) {
 	defer testServerSuccess.Close()
 
 	var aux interface{}
-	badJSONErr := json.Unmarshal([]byte("!"), aux)
+	badJSONErr := json.Unmarshal([]byte("bad JSON '{"), aux)
 	testServerBadJSON := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(http.StatusOK)
-		rw.Write([]byte("!"))
+		rw.Write([]byte("bad JSON '{"))
 	}))
 	defer testServerBadJSON.Close()
 
@@ -150,6 +150,12 @@ func TestClient_newAccessToken(t *testing.T) {
 		}`))
 	}))
 	defer testServerBadReq.Close()
+
+	testServerBadReqBadJson := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.WriteHeader(http.StatusBadRequest)
+		rw.Write([]byte("bad JSON '{"))
+	}))
+	defer testServerBadReqBadJson.Close()
 
 	testServerErr := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(http.StatusInternalServerError)
@@ -165,7 +171,6 @@ func TestClient_newAccessToken(t *testing.T) {
 		authServerURL    string
 		accessToken      string
 		accessTokenMutex *sync.RWMutex
-		logger           *zap.Logger
 	}
 	tests := []struct {
 		name    string
@@ -184,6 +189,17 @@ func TestClient_newAccessToken(t *testing.T) {
 			wantErr: badJSONErr,
 		},
 		{
+			name: "ErrorSigningJWTWithPrivateKey",
+			fields: fields{
+				client:           http.Client{},
+				username:         "my@email.com",
+				instanceURL:      testServerSuccess.URL,
+				accessTokenMutex: &sync.RWMutex{},
+				rsaPrivateKey:    &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: big.NewInt(1)}},
+			},
+			wantErr: rsa.ErrMessageTooLong,
+		},
+		{
 			name: "OauthErrorResponse",
 			fields: fields{
 				client:           http.Client{},
@@ -196,6 +212,17 @@ func TestClient_newAccessToken(t *testing.T) {
 				Code:        "someSalesforceError",
 				Description: "outOfMana",
 			},
+		},
+		{
+			name: "OauthUnexpectedResponseFormat",
+			fields: fields{
+				client:           http.Client{},
+				username:         "my@email.com",
+				instanceURL:      testServerBadReqBadJson.URL,
+				rsaPrivateKey:    testRSAPrivateKey,
+				accessTokenMutex: &sync.RWMutex{},
+			},
+			wantErr: badJSONErr,
 		},
 		{
 			name: "UnexpectedOauthServerError",
@@ -260,7 +287,7 @@ func TestClient_sendRequest(t *testing.T) {
 
 	testServerBadResFmtBody := []byte(`this_is_in_an_un-understandable_format`)
 	testServerBadResFmtStatusCode := http.StatusInternalServerError
-	var aux ErrorObjects
+	var aux APIErrs
 	testServerBadResFmtErr := json.Unmarshal(testServerBadResFmtBody, &aux)
 	testServerBadResFmt := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(testServerBadResFmtStatusCode)
@@ -277,7 +304,7 @@ func TestClient_sendRequest(t *testing.T) {
 	]
 	`)
 	testServerErrStatusCode := http.StatusInternalServerError
-	var testServerErrSfErr ErrorObjects
+	var testServerErrSfErr APIErrs
 	json.Unmarshal(testServerErrBody, &testServerErrSfErr)
 	testServerErr := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(testServerErrStatusCode)
@@ -413,7 +440,7 @@ func TestClient_SendRequest(t *testing.T) {
 
 	testServerBadResFmtStatusCode := http.StatusInternalServerError
 	testServerBadResFmtBody := []byte(`this_is_in_an_un-understandable_format`)
-	var aux ErrorObjects
+	var aux APIErrs
 	testServerBadResFmtErr := json.Unmarshal(testServerBadResFmtBody, &aux)
 	testServerBadResFmt := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(testServerBadResFmtStatusCode)
@@ -437,7 +464,7 @@ func TestClient_SendRequest(t *testing.T) {
 		}
 	]
 	`)
-	var testServerGetNewTokenErr ErrorObjects
+	var testServerGetNewTokenErr APIErrs
 	json.Unmarshal(testServerGetNewTokenBody2, &testServerGetNewTokenErr)
 	testServerGetNewToken := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		if req.URL != nil && req.URL.Path == "/services/oauth2/token" {

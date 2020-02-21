@@ -36,7 +36,7 @@ func TestOAuthErr_Error(t *testing.T) {
 	}
 }
 
-func TestErrorObject_Error(t *testing.T) {
+func TestAPIErr_Error(t *testing.T) {
 	type fields struct {
 		Message string
 		ErrCode string
@@ -57,21 +57,21 @@ func TestErrorObject_Error(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := &ErrorObject{
+			e := &APIErr{
 				Message: tt.fields.Message,
 				ErrCode: tt.fields.ErrCode,
 			}
 			if got := e.Error(); got != tt.want {
-				t.Errorf("ErrorObject.Error() = %+v, want %+v", got, tt.want)
+				t.Errorf("APIErr.Error() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestErrorObjects_Error(t *testing.T) {
+func TestAPIErrs_Error(t *testing.T) {
 	tests := []struct {
 		name string
-		e    *ErrorObjects
+		e    *APIErrs
 		want string
 	}{
 		{
@@ -81,13 +81,13 @@ func TestErrorObjects_Error(t *testing.T) {
 		},
 		{
 			name: "EmptyErrsSlice",
-			e:    &ErrorObjects{},
+			e:    &APIErrs{},
 			want: "",
 		},
 		{
 			name: "OneErr",
-			e: &ErrorObjects{
-				ErrorObject{
+			e: &APIErrs{
+				APIErr{
 					ErrCode: "123",
 					Message: "message",
 					Fields:  []string{"field"},
@@ -97,25 +97,25 @@ func TestErrorObjects_Error(t *testing.T) {
 		},
 		{
 			name: "MultipleErrs",
-			e: &ErrorObjects{
-				ErrorObject{
+			e: &APIErrs{
+				APIErr{
 					ErrCode: "123",
 					Message: "message",
 					Fields:  []string{"field"},
 				},
-				ErrorObject{
+				APIErr{
 					ErrCode: "456",
 					Message: "otherMessage",
 					Fields:  []string{"otherField"},
 				},
 			},
-			want: "error code: 123, message: message, fields: field\nerror code: 456, message: otherMessage, fields: otherField",
+			want: "error code: 123, message: message, fields: field|error code: 456, message: otherMessage, fields: otherField",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.e.Error(); got != tt.want {
-				t.Errorf("ErrorObjects.Error() = %+v, want %+v", got, tt.want)
+				t.Errorf("APIErrs.Error() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
