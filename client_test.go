@@ -49,14 +49,15 @@ func init() {
 }
 
 func TestNewClientWithJWTBearer(t *testing.T) {
-	testTokenServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+	testTokenSuccessServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(http.StatusOK)
 		rw.Write([]byte(`{"access_token":"aSalesforceAccessToken"}`))
+		return
 	}))
-	defer testTokenServer.Close()
+	defer testTokenSuccessServer.Close()
 
 	testTokenErrorServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		rw.WriteHeader(http.StatusOK)
+		rw.WriteHeader(http.StatusBadRequest)
 		rw.Write([]byte(`{"error":"aSalesforceError"}`))
 	}))
 	defer testTokenErrorServer.Close()
@@ -67,62 +68,58 @@ func TestNewClientWithJWTBearer(t *testing.T) {
 		consumerKey string
 		username    string
 		privateKey  []byte
-		logger      *zap.Logger
 	}
 	tests := []struct {
 		name    string
 		args    args
-		want    *salesforceClient
+		want    *jwtBearer
 		wantErr bool
 	}{
 		{
 			name: "Error/ParseRSAPrivateKeyFromPEM",
 			args: args{
-				isProd:      true,
-				instanceURL: "http//some.url",
-				privateKey:  nil,
-				logger:      zap.NewNop(),
+				isProd:     true,
+				privateKey: nil,
 			},
 			wantErr: true,
 		},
 		{
-			name: "Success/ErrorGettingToken",
+			name: "ErrorGettingToken",
 			args: args{
 				instanceURL: testTokenErrorServer.URL,
 				privateKey:  testRSAPrivateKeyBytes,
-				logger:      zap.NewNop(),
 			},
-			want: &salesforceClient{
+			want: &jwtBearer{
 				client:           http.Client{},
 				instanceURL:      testTokenErrorServer.URL,
 				rsaPrivateKey:    testRSAPrivateKey,
 				accessTokenMutex: &sync.RWMutex{},
-				authServer:       "https://test.salesforce.com",
-				logger:           zap.NewNop(),
+				authServerURL:    testTokenErrorServer.URL,
 			},
+			wantErr: true,
 		},
 		{
 			name: "Success",
 			args: args{
 				isProd:      true,
-				instanceURL: testTokenServer.URL,
+				instanceURL: testTokenSuccessServer.URL,
 				privateKey:  testRSAPrivateKeyBytes,
-				logger:      zap.NewNop(),
 			},
-			want: &salesforceClient{
-				client:           http.Client{},
-				instanceURL:      testTokenServer.URL,
+			want: &jwtBearer{
+				client:      http.Client{},
+				instanceURL: testTokenSuccessServer.URL,
+				username:    "my@email.com",
+
 				rsaPrivateKey:    testRSAPrivateKey,
 				accessTokenMutex: &sync.RWMutex{},
-				authServer:       "https://test.salesforce.com",
+				authServerURL:    testTokenErrorServer.URL,
 				accessToken:      "aSalesforceAccessToken",
-				logger:           zap.NewNop(),
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewClientWithJWTBearer(tt.args.isProd, tt.args.instanceURL, tt.args.consumerKey, tt.args.username, tt.args.privateKey, time.Second, *http.DefaultClient, tt.args.logger)
+			_, err := NewClientWithJWTBearer(tt.args.isProd, tt.args.instanceURL, tt.args.consumerKey, tt.args.username, tt.args.privateKey, time.Second, *http.DefaultClient)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewClientWithJWTBearer() error = %+v, wantErr %+v", err != nil, tt.wantErr)
 			}
@@ -130,7 +127,7 @@ func TestNewClientWithJWTBearer(t *testing.T) {
 	}
 }
 
-func TestClient_setNewAccessToken(t *testing.T) {
+func TestClient_newAccessToken(t *testing.T) {
 	testServerSuccess := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(http.StatusOK)
 		rw.Write([]byte(`{"access_token":"aSalesforceAccessToken"}`))
@@ -145,14 +142,19 @@ func TestClient_setNewAccessToken(t *testing.T) {
 	}))
 	defer testServerBadJSON.Close()
 
-	testServer500 := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+	testServerBadReq := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(http.StatusBadRequest)
 		rw.Write([]byte(`{
 			"error":"someSalesforceError",
 			"error_description":"outOfMana"	
 		}`))
 	}))
-	defer testServer500.Close()
+	defer testServerBadReq.Close()
+
+	testServerErr := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer testServerErr.Close()
 
 	type fields struct {
 		client           http.Client
@@ -160,7 +162,7 @@ func TestClient_setNewAccessToken(t *testing.T) {
 		rsaPrivateKey    *rsa.PrivateKey
 		consumerKey      string
 		username         string
-		authServer       string
+		authServerURL    string
 		accessToken      string
 		accessTokenMutex *sync.RWMutex
 		logger           *zap.Logger
@@ -170,6 +172,45 @@ func TestClient_setNewAccessToken(t *testing.T) {
 		fields  fields
 		wantErr error
 	}{
+		{
+			name: "SalesforceBadJSONError",
+			fields: fields{
+				client:           http.Client{},
+				username:         "my@email.com",
+				instanceURL:      testServerBadJSON.URL,
+				rsaPrivateKey:    testRSAPrivateKey,
+				accessTokenMutex: &sync.RWMutex{},
+			},
+			wantErr: badJSONErr,
+		},
+		{
+			name: "OauthErrorResponse",
+			fields: fields{
+				client:           http.Client{},
+				username:         "my@email.com",
+				instanceURL:      testServerBadReq.URL,
+				rsaPrivateKey:    testRSAPrivateKey,
+				accessTokenMutex: &sync.RWMutex{},
+			},
+			wantErr: &OAuthErr{
+				Code:        "someSalesforceError",
+				Description: "outOfMana",
+			},
+		},
+		{
+			name: "UnexpectedOauthServerError",
+			fields: fields{
+				client:           http.Client{},
+				username:         "my@email.com",
+				instanceURL:      testServerErr.URL,
+				rsaPrivateKey:    testRSAPrivateKey,
+				accessTokenMutex: &sync.RWMutex{},
+			},
+			wantErr: fmt.Errorf("%s responded with an unexpected HTTP status code: %d",
+				testServerErr.URL+"/services/oauth2/token",
+				http.StatusInternalServerError,
+			),
+		},
 		{
 			name: "Success",
 			fields: fields{
@@ -181,49 +222,22 @@ func TestClient_setNewAccessToken(t *testing.T) {
 			},
 			wantErr: nil,
 		},
-		{
-			name: "SalesforceBadJSONError",
-			fields: fields{
-				client:           http.Client{},
-				username:         "my@email.com",
-				instanceURL:      testServerBadJSON.URL,
-				rsaPrivateKey:    testRSAPrivateKey,
-				accessTokenMutex: &sync.RWMutex{},
-				logger:           zap.NewNop(),
-			},
-			wantErr: badJSONErr,
-		},
-		{
-			name: "Error",
-			fields: fields{
-				client:           http.Client{},
-				username:         "my@email.com",
-				instanceURL:      testServer500.URL,
-				rsaPrivateKey:    testRSAPrivateKey,
-				accessTokenMutex: &sync.RWMutex{},
-			},
-			wantErr: &NewTokenOAuthErr{
-				Code:        "someSalesforceError",
-				Description: "outOfMana",
-			},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := &salesforceClient{
+			c := &jwtBearer{
 				client:           tt.fields.client,
 				instanceURL:      tt.fields.instanceURL,
 				rsaPrivateKey:    tt.fields.rsaPrivateKey,
 				consumerKey:      tt.fields.consumerKey,
 				username:         tt.fields.username,
-				authServer:       tt.fields.authServer,
+				authServerURL:    tt.fields.authServerURL,
 				accessToken:      tt.fields.accessToken,
 				accessTokenMutex: tt.fields.accessTokenMutex,
-				logger:           tt.fields.logger,
 			}
-			gotErr := c.setNewAccessToken()
+			gotErr := c.newAccessToken()
 			if !reflect.DeepEqual(gotErr, tt.wantErr) {
-				t.Errorf("setNewAccessToken() = %+v, want %+v", gotErr, tt.wantErr)
+				t.Errorf("newAccessToken() = %+v, want %+v", gotErr, tt.wantErr)
 			}
 		})
 	}
@@ -374,22 +388,21 @@ func TestClient_sendRequest(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		c := &salesforceClient{
+		c := &jwtBearer{
 			client:           http.Client{},
 			rsaPrivateKey:    testRSAPrivateKey,
 			accessTokenMutex: &sync.RWMutex{},
-			logger:           zap.NewNop(),
 		}
 
 		t.Run(tt.name, func(t *testing.T) {
 			statusCode, resBody, err := c.sendRequest(tt.args.ctx, tt.args.method, tt.args.url, tt.args.headers, tt.args.requestBody)
 			switch {
 			case !reflect.DeepEqual(statusCode, tt.want.statusCode):
-				t.Errorf("setNewAccessToken() statusCode = %+v, want %+v", statusCode, tt.want.statusCode)
+				t.Errorf("newAccessToken() statusCode = %+v, want %+v", statusCode, tt.want.statusCode)
 			case !reflect.DeepEqual(resBody, tt.want.resBody):
-				t.Errorf("setNewAccessToken() responseBody = %+v, want %+v", resBody, tt.want.resBody)
+				t.Errorf("newAccessToken() responseBody = %+v, want %+v", resBody, tt.want.resBody)
 			case !reflect.DeepEqual(err, tt.want.err):
-				t.Errorf("setNewAccessToken() err = %+v, want %+v", err, tt.want.err)
+				t.Errorf("newAccessToken() err = %+v, want %+v", err, tt.want.err)
 			}
 		})
 	}
@@ -450,7 +463,7 @@ func TestClient_SendRequest(t *testing.T) {
 			"error_description": "invalid authorization code"
 		}
 	`)
-	var testServerNewTokenErrErr NewTokenOAuthErr
+	var testServerNewTokenErrErr OAuthErr
 	json.Unmarshal(testServerNewTokenErrBody, &testServerNewTokenErrErr)
 	testServerNewTokenErr := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		if req.URL != nil && req.URL.Path == "/services/oauth2/token" {
@@ -501,11 +514,11 @@ func TestClient_SendRequest(t *testing.T) {
 		requestBody []byte
 	}
 	type fields struct {
-		instanceURL string
-		consumerKey string
-		username    string
-		authServer  string
-		accessToken string
+		instanceURL   string
+		consumerKey   string
+		username      string
+		authServerURL string
+		accessToken   string
 	}
 	type expected struct {
 		statusCode int
@@ -572,26 +585,25 @@ func TestClient_SendRequest(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		c := &salesforceClient{
+		c := &jwtBearer{
 			client:           http.Client{},
 			instanceURL:      tt.fields.instanceURL,
 			rsaPrivateKey:    testRSAPrivateKey,
 			consumerKey:      tt.fields.consumerKey,
 			username:         tt.fields.username,
-			authServer:       tt.fields.authServer,
+			authServerURL:    tt.fields.authServerURL,
 			accessToken:      tt.fields.accessToken,
 			accessTokenMutex: &sync.RWMutex{},
-			logger:           zap.NewNop(),
 		}
 		t.Run(tt.name, func(t *testing.T) {
 			statusCode, resBody, err := c.SendRequest(context.Background(), tt.args.method, tt.args.relURL, tt.args.headers, tt.args.requestBody)
 			switch {
 			case !reflect.DeepEqual(statusCode, tt.want.statusCode):
-				t.Errorf("setNewAccessToken() statusCode = %+v, want %+v", statusCode, tt.want.statusCode)
+				t.Errorf("newAccessToken() statusCode = %+v, want %+v", statusCode, tt.want.statusCode)
 			case !reflect.DeepEqual(resBody, tt.want.resBody):
-				t.Errorf("setNewAccessToken() responseBody = %+v, want %+v", resBody, tt.want.resBody)
+				t.Errorf("newAccessToken() responseBody = %+v, want %+v", resBody, tt.want.resBody)
 			case !reflect.DeepEqual(err, tt.want.err):
-				t.Errorf("setNewAccessToken() err = %+v, want %+v", err, tt.want.err)
+				t.Errorf("newAccessToken() err = %+v, want %+v", err, tt.want.err)
 			}
 		})
 	}

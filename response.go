@@ -9,28 +9,26 @@ import (
 /*  Salesforce auth token response type  */
 /*****************************************/
 
-// NewTokenResponse represents a response of requests to salesforce OAuth token endpoint
+// AccessTokenResponse represents a response of requests to salesforce OAuth token endpoint
 // https://${yourInstance}.salesforce.com/services/oauth2/token
-type NewTokenResponse struct {
+type AccessTokenResponse struct {
 	// Success response fields
 	AccessToken string `json:"access_token"`
 	Scope       string `json:"scope"`
 	Instance    string `json:"instance_url"`
 	ID          string `json:"id"`
 	TokenType   string `json:"token_type"`
-	// Error response fields
-	*NewTokenOAuthErr
 }
 
-// NewTokenOAuthErr represents an error that occurs during the authorization flow
+// OAuthErr represents an error that occurs during the authorization flow
 // https://help.salesforce.com/articleView?id=remoteaccess_oauth_flow_errors.htm&type=5
-type NewTokenOAuthErr struct {
+type OAuthErr struct {
 	// Error response fields
 	Code        string `json:"error"`
 	Description string `json:"error_description"`
 }
 
-func (e *NewTokenOAuthErr) Error() string {
+func (e *OAuthErr) Error() string {
 	return fmt.Sprintf("error code: %s, description: %s", e.Code, e.Description)
 }
 

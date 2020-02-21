@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func TestNewTokenOAuthErr_Error(t *testing.T) {
+func TestOAuthErr_Error(t *testing.T) {
 	type fields struct {
 		Code        string
 		Description string
@@ -25,12 +25,12 @@ func TestNewTokenOAuthErr_Error(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := &NewTokenOAuthErr{
+			e := &OAuthErr{
 				Code:        tt.fields.Code,
 				Description: tt.fields.Description,
 			}
 			if got := e.Error(); got != tt.want {
-				t.Errorf("NewTokenOAuthErr.Error() = %+v, want %+v", got, tt.want)
+				t.Errorf("OAuthErr.Error() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}

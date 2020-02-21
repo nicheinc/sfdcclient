@@ -13,76 +13,78 @@ import (
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
-	"go.uber.org/zap"
 )
 
-type salesforceClient struct {
+type jwtBearer struct {
 	// Underlying http client used for making all HTTP requests to salesforce
 	// note that the configuration of this HTTP client will affect all HTTP
 	// requests done by this struct (including the OAuth requests)
 	client http.Client
 
 	// URL of server where the salesforce organization lives
-	// instanceURL *url.URL
 	instanceURL string
 
 	// Variables needed for the generation and signing of the JWT token
 	rsaPrivateKey   *rsa.PrivateKey
 	consumerKey     string
 	username        string
-	authServer      string
+	authServerURL   string
 	tokenExpTimeout time.Duration
 
 	// Authentication token issued by Salesforce
 	accessToken      string
 	accessTokenMutex *sync.RWMutex
-
-	logger *zap.Logger
 }
 
-func NewClientWithJWTBearer(sandbox bool, instance, consumerKey, username string, privateKey []byte, tokenExpTimeout time.Duration, httpClient http.Client, logger *zap.Logger) (Client, error) {
-	appClient := salesforceClient{
-		client:           httpClient,
-		instanceURL:      fmt.Sprintf("https://%s.salesforce.com", instance),
+func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username string, privateKey []byte, tokenExpTimeout time.Duration, httpClient http.Client) (Client, error) {
+	baseSFURL := "https://%s.salesforce.com"
+
+	var authServerURL string
+	if sandbox {
+		authServerURL = fmt.Sprintf(baseSFURL, "test")
+	} else {
+		authServerURL = fmt.Sprintf(baseSFURL, "login")
+	}
+
+	jwtBearer := jwtBearer{
+		client:        httpClient,
+		instanceURL:   instanceURL,
+		authServerURL: authServerURL,
+		// oauthTokenURL:    instanceURL + "/services/oauth2/token",
 		consumerKey:      consumerKey,
 		username:         username,
 		accessTokenMutex: &sync.RWMutex{},
-		logger:           logger,
 	}
 
-	baseSFURL := "https://%s.salesforce.com"
 	if sandbox {
-		appClient.authServer = fmt.Sprintf(baseSFURL, "test")
+		jwtBearer.authServerURL = fmt.Sprintf(baseSFURL, "test")
 	} else {
-		appClient.authServer = fmt.Sprintf(baseSFURL, "login")
+		jwtBearer.authServerURL = fmt.Sprintf(baseSFURL, "login")
 	}
 
 	var err error
 
-	if appClient.rsaPrivateKey, err = jwt.ParseRSAPrivateKeyFromPEM(privateKey); err != nil {
-		logger.Error("Error parsing private key file to an RSA private key", zap.Error(err))
+	if jwtBearer.rsaPrivateKey, err = jwt.ParseRSAPrivateKeyFromPEM(privateKey); err != nil {
 		return nil, err
 	}
 
-	if err = appClient.setNewAccessToken(); err != nil {
-		logger.Error("Error getting access token from salesforce", zap.Error(err))
+	if err = jwtBearer.newAccessToken(); err != nil {
+		return nil, err
 	}
 
-	fmt.Println(appClient.accessToken)
-
-	return &appClient, nil
+	return &jwtBearer, nil
 }
 
-// setNewAccessToken updates the client's accessToken if salesforce successfully grants one
+// newAccessToken updates the client's accessToken if salesforce successfully grants one
 // This function implements "OAuth 2.0 JWT Bearer Flow for Server-to-Server Integration"
 // see https://help.salesforce.com/articleView?id=remoteaccess_oauth_jwt_flow.htm
-func (c *salesforceClient) setNewAccessToken() error {
+func (c *jwtBearer) newAccessToken() error {
 	// Create JWT
 	token := jwt.NewWithClaims(
 		jwt.SigningMethodRS256,
 		jwt.StandardClaims{
 			Issuer:    c.consumerKey,
-			Audience:  c.authServer,
+			Audience:  c.authServerURL,
 			Subject:   c.username,
 			ExpiresAt: time.Now().Add(c.tokenExpTimeout).UTC().Unix(),
 		},
@@ -93,10 +95,12 @@ func (c *salesforceClient) setNewAccessToken() error {
 		return err
 	}
 
+	oauthTokenURL := c.instanceURL + "/services/oauth2/token"
+	// oauthTokenURL := c.authServerURL + "/services/oauth2/token"
 	// Request new access token from salesforce's OAuth endpoint
 	req, err := http.NewRequest(
 		"POST",
-		c.instanceURL+"/services/oauth2/token",
+		oauthTokenURL,
 		strings.NewReader(
 			fmt.Sprintf("grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=%s", signedJWT),
 		),
@@ -110,22 +114,27 @@ func (c *salesforceClient) setNewAccessToken() error {
 	resBytes, err := ioutil.ReadAll(res.Body)
 	res.Body.Close()
 	if err != nil {
-		c.logger.Error("Error reading response body of access token request", zap.Error(err))
 		return err
 	}
 
-	var tokenRes NewTokenResponse
+	switch res.StatusCode {
+	case http.StatusOK:
+		break
+	case http.StatusBadRequest:
+		var errRes OAuthErr
+		if err := json.Unmarshal(resBytes, &errRes); err != nil {
+			return err
+		}
+		return &errRes
+	default:
+		return fmt.Errorf("%s responded with an unexpected HTTP status code: %d", oauthTokenURL, res.StatusCode)
+	}
+
+	var tokenRes AccessTokenResponse
 	if err := json.Unmarshal(resBytes, &tokenRes); err != nil {
-		c.logger.Error("Error parsing response body from salesforce", zap.Error(err))
 		return err
 	}
 
-	// If salesforce responds with an error, return it
-	if tokenRes.NewTokenOAuthErr != nil {
-		return tokenRes.NewTokenOAuthErr
-	}
-
-	// Update the our access token
 	c.accessTokenMutex.Lock()
 	c.accessToken = tokenRes.AccessToken
 	c.accessTokenMutex.Unlock()
@@ -136,7 +145,7 @@ func (c *salesforceClient) setNewAccessToken() error {
 // SendRequest sends a n HTTP request as specified by its function parameters
 // If the server responds with an unauthorized 401 HTTP status code, the client attempts
 // to get a new authorization access token and retries the same request one more time
-func (c salesforceClient) SendRequest(ctx context.Context, method, relURL string, headers http.Header, requestBody []byte) (int, []byte, error) {
+func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, headers http.Header, requestBody []byte) (int, []byte, error) {
 	url := c.instanceURL + relURL
 	var err error
 
@@ -150,12 +159,12 @@ func (c salesforceClient) SendRequest(ctx context.Context, method, relURL string
 			// hence, we attempt to update the client's access token and retry the request once
 			// see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm
 			if statusCode == http.StatusUnauthorized {
-				c.logger.Error("Current salesforce access token expired or invalid, attempting to get a new one", zap.Error(err))
-				err = c.setNewAccessToken()
+				err := c.newAccessToken()
 				if err != nil {
-					c.logger.Error("Getting new access token from salesforce", zap.Error(err))
 					return statusCode, nil, err
 				}
+
+				// Retry the original request
 				statusCode, resBody, err = c.sendRequest(ctx, method, url, headers, requestBody)
 				if err != nil {
 					return statusCode, nil, err
@@ -169,7 +178,7 @@ func (c salesforceClient) SendRequest(ctx context.Context, method, relURL string
 	return statusCode, resBody, nil
 }
 
-func (c salesforceClient) sendRequest(ctx context.Context, method, url string, headers http.Header, requestBody []byte) (int, []byte, error) {
+func (c jwtBearer) sendRequest(ctx context.Context, method, url string, headers http.Header, requestBody []byte) (int, []byte, error) {
 	var req *http.Request
 	var err error
 	if requestBody == nil {
@@ -212,18 +221,10 @@ func (c salesforceClient) sendRequest(ctx context.Context, method, url string, h
 		http.StatusInternalServerError:
 		err = json.Unmarshal(resBytes, &errs)
 		if err != nil {
-			c.logger.Error("Unexpected salesforce response format",
-				zap.Int("statusCode", res.StatusCode),
-				zap.String("responseBody", string(resBytes)),
-			)
 			return res.StatusCode, nil, err
 		}
 		return res.StatusCode, nil, &errs
 	default:
-		c.logger.Error("Salesforce returned an unexpected HTTP status code",
-			zap.Int("statusCode", res.StatusCode),
-			zap.String("responseBody", string(resBytes)),
-		)
 		return res.StatusCode, nil, fmt.Errorf("unexpected HTTP status code: %d", res.StatusCode)
 	}
 
