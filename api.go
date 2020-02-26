@@ -9,10 +9,9 @@ import (
 /*  Salesforce auth token response type  */
 /*****************************************/
 
-// AccessTokenResponse represents a response of requests to salesforce OAuth token endpoint
+// AccessTokenResponse represents a successful response of a requests to salesforce for an OAuth token
 // https://${yourInstance}.salesforce.com/services/oauth2/token
 type AccessTokenResponse struct {
-	// Success response fields
 	AccessToken string `json:"access_token"`
 	Scope       string `json:"scope"`
 	Instance    string `json:"instance_url"`
@@ -20,10 +19,9 @@ type AccessTokenResponse struct {
 	TokenType   string `json:"token_type"`
 }
 
-// OAuthErr represents an error that occurs during the authorization flow
+// OAuthErr represents an error that occurs during the OAuth authorization flow
 // https://help.salesforce.com/articleView?id=remoteaccess_oauth_flow_errors.htm&type=5
 type OAuthErr struct {
-	// Error response fields
 	Code        string `json:"error"`
 	Description string `json:"error_description"`
 }

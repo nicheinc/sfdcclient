@@ -31,7 +31,7 @@ type jwtBearer struct {
 	authServerURL   string
 	tokenExpTimeout time.Duration
 
-	// Authentication token issued by Salesforce
+	// Cached access token issued by Salesforce
 	accessToken      string
 	accessTokenMutex *sync.RWMutex
 }
@@ -62,7 +62,6 @@ func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username str
 	}
 
 	var err error
-
 	if jwtBearer.rsaPrivateKey, err = jwt.ParseRSAPrivateKeyFromPEM(privateKey); err != nil {
 		return nil, err
 	}
@@ -74,8 +73,8 @@ func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username str
 	return &jwtBearer, nil
 }
 
-// newAccessToken updates the client's accessToken if salesforce successfully grants one
-// This function implements "OAuth 2.0 JWT Bearer Flow for Server-to-Server Integration"
+// newAccessToken updates the cached access token if salesforce successfully grants one
+// This function follows the "OAuth 2.0 JWT Bearer Flow for Server-to-Server Integration"
 // see https://help.salesforce.com/articleView?id=remoteaccess_oauth_jwt_flow.htm
 func (c *jwtBearer) newAccessToken() error {
 	// Create JWT
@@ -94,9 +93,8 @@ func (c *jwtBearer) newAccessToken() error {
 		return err
 	}
 
-	oauthTokenURL := c.instanceURL + "/services/oauth2/token"
-	// oauthTokenURL := c.authServerURL + "/services/oauth2/token"
 	// Request new access token from salesforce's OAuth endpoint
+	oauthTokenURL := c.instanceURL + "/services/oauth2/token"
 	req, err := http.NewRequest(
 		"POST",
 		oauthTokenURL,
@@ -143,7 +141,7 @@ func (c *jwtBearer) newAccessToken() error {
 
 // SendRequest sends a n HTTP request as specified by its function parameters
 // If the server responds with an unauthorized 401 HTTP status code, the client attempts
-// to get a new authorization access token and retries the same request one more time
+// to get a new authorization access token and retries the request once
 func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, headers http.Header, requestBody []byte) (int, []byte, error) {
 	url := c.instanceURL + relURL
 	var err error
@@ -151,18 +149,18 @@ func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, heade
 	// Issue the request to salesforce
 	statusCode, resBody, err := c.sendRequest(ctx, method, url, headers, requestBody)
 	if err != nil {
-		// Check if the error came from salesforce's API
+		// Check if the error is an actual salesforce API error\
+		// see: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm
 		if _, ok := err.(*APIErrs); ok {
 			// If the status code returned is Unauthorized (401)
-			// Presumably, the current client's access token we have has expired,
-			// hence, we attempt to update the client's access token and retry the request once
+			// Presumably, the current cached access token has expired,
+			// hence, we attempt to update the cached access token and retry the request once
 			// see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm
 			if statusCode == http.StatusUnauthorized {
 				err := c.newAccessToken()
 				if err != nil {
 					return statusCode, nil, err
 				}
-
 				// Retry the original request
 				statusCode, resBody, err = c.sendRequest(ctx, method, url, headers, requestBody)
 				if err != nil {
@@ -220,6 +218,7 @@ func (c jwtBearer) sendRequest(ctx context.Context, method, url string, headers 
 		http.StatusInternalServerError:
 		err = json.Unmarshal(resBytes, &errs)
 		if err != nil {
+			// The salesforce error response body was in an unexpected and incompatible format
 			return res.StatusCode, nil, err
 		}
 		return res.StatusCode, nil, &errs
