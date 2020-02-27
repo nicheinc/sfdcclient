@@ -16,9 +16,9 @@ import (
 )
 
 type jwtBearer struct {
-	// Underlying http client used for making all HTTP requests to salesforce
+	// Underlying HTTP client used for making all HTTP requests to salesforce
 	// note that the configuration of this HTTP client will affect all HTTP
-	// requests done by this struct (including the OAuth requests)
+	// requests sent (including the OAuth requests)
 	client http.Client
 
 	// URL of server where the salesforce organization lives
@@ -96,7 +96,7 @@ func (c *jwtBearer) newAccessToken() error {
 	// Request new access token from salesforce's OAuth endpoint
 	oauthTokenURL := c.instanceURL + "/services/oauth2/token"
 	req, err := http.NewRequest(
-		"POST",
+		http.MethodPost,
 		oauthTokenURL,
 		strings.NewReader(
 			fmt.Sprintf("grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=%s", signedJWT),
@@ -149,12 +149,12 @@ func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, heade
 	// Issue the request to salesforce
 	statusCode, resBody, err := c.sendRequest(ctx, method, url, headers, requestBody)
 	if err != nil {
-		// Check if the error is an actual salesforce API error\
+		// Check if the error is an actual salesforce API error
 		// see: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm
 		if _, ok := err.(*APIErrs); ok {
 			// If the status code returned is Unauthorized (401)
 			// Presumably, the current cached access token has expired,
-			// hence, we attempt to update the cached access token and retry the request once
+			// hence, we attempt to update the cached access token and retry the earlier request once
 			// see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm
 			if statusCode == http.StatusUnauthorized {
 				err := c.newAccessToken()
