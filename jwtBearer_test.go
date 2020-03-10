@@ -279,9 +279,11 @@ func TestClient_sendRequest(t *testing.T) {
 	}))
 	defer testServer.Close()
 
+	testServerTeapotResBody := []byte("I'm a teapot")
 	testServerTeapotStatusCode := http.StatusTeapot
 	testServerTeapot := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(testServerTeapotStatusCode)
+		rw.Write(testServerTeapotResBody)
 	}))
 	defer testServerTeapot.Close()
 
@@ -360,6 +362,7 @@ func TestClient_sendRequest(t *testing.T) {
 			},
 			want: expected{
 				statusCode: testServerTeapotStatusCode,
+				resBody:    testServerTeapotResBody,
 				err:        fmt.Errorf("unexpected HTTP status code: %d", http.StatusTeapot),
 			},
 		},
@@ -397,6 +400,7 @@ func TestClient_sendRequest(t *testing.T) {
 			},
 			want: expected{
 				statusCode: testServerErrStatusCode,
+				resBody:    testServerErrBody,
 				err:        &testServerErrSfErr,
 			},
 		},
@@ -541,11 +545,12 @@ func TestClient_SendRequest(t *testing.T) {
 		requestBody []byte
 	}
 	type fields struct {
-		instanceURL   string
-		consumerKey   string
-		username      string
-		authServerURL string
-		accessToken   string
+		instanceURL     string
+		consumerKey     string
+		username        string
+		authServerURL   string
+		accessToken     string
+		tokenExpiration time.Time
 	}
 	type expected struct {
 		statusCode int
@@ -561,7 +566,8 @@ func TestClient_SendRequest(t *testing.T) {
 		{
 			name: "sendRequest/Error",
 			fields: fields{
-				instanceURL: testServerBadResFmt.URL,
+				instanceURL:     testServerBadResFmt.URL,
+				tokenExpiration: time.Now().Add(1 * time.Hour),
 			},
 			want: expected{
 				statusCode: testServerBadResFmtStatusCode,
@@ -569,9 +575,25 @@ func TestClient_SendRequest(t *testing.T) {
 			},
 		},
 		{
+			name: "ExpiredToken/NewTokenError",
+			fields: fields{
+				instanceURL:     testServerNewTokenErr.URL,
+				tokenExpiration: time.Now().Add(-1 * time.Hour),
+			},
+			args: args{
+				method: http.MethodGet,
+				relURL: "/something",
+			},
+			want: expected{
+				statusCode: -1,
+				err:        &testServerNewTokenErrErr,
+			},
+		},
+		{
 			name: "Unauthorized/NewTokenSuccess/Request/Error",
 			fields: fields{
-				instanceURL: testServerGetNewToken.URL,
+				instanceURL:     testServerGetNewToken.URL,
+				tokenExpiration: time.Now().Add(1 * time.Hour),
 			},
 			args: args{
 				method: http.MethodGet,
@@ -579,13 +601,15 @@ func TestClient_SendRequest(t *testing.T) {
 			},
 			want: expected{
 				statusCode: testServerGetNewTokenStatusCode,
+				resBody:    testServerGetNewTokenBody2,
 				err:        &testServerGetNewTokenErr,
 			},
 		},
 		{
 			name: "Unauthorized/NewTokenError",
 			fields: fields{
-				instanceURL: testServerNewTokenErr.URL,
+				instanceURL:     testServerNewTokenErr.URL,
+				tokenExpiration: time.Now().Add(1 * time.Hour),
 			},
 			args: args{
 				method: http.MethodGet,
@@ -599,7 +623,8 @@ func TestClient_SendRequest(t *testing.T) {
 		{
 			name: "Unauthorized/NewToken/Success",
 			fields: fields{
-				instanceURL: testServerUnauthorizedNewTokenSuccess.URL,
+				instanceURL:     testServerUnauthorizedNewTokenSuccess.URL,
+				tokenExpiration: time.Now().Add(1 * time.Hour),
 			},
 			args: args{
 				method: http.MethodGet,
@@ -620,17 +645,48 @@ func TestClient_SendRequest(t *testing.T) {
 			username:         tt.fields.username,
 			authServerURL:    tt.fields.authServerURL,
 			accessToken:      tt.fields.accessToken,
+			tokenExpiration:  tt.fields.tokenExpiration,
 			accessTokenMutex: &sync.RWMutex{},
 		}
 		t.Run(tt.name, func(t *testing.T) {
 			statusCode, resBody, err := c.SendRequest(context.Background(), tt.args.method, tt.args.relURL, tt.args.headers, tt.args.requestBody)
 			switch {
 			case !reflect.DeepEqual(statusCode, tt.want.statusCode):
-				t.Errorf("newAccessToken() statusCode = %+v, want %+v", statusCode, tt.want.statusCode)
+				t.Errorf("SendRequest() statusCode = %+v, want %+v", statusCode, tt.want.statusCode)
 			case !reflect.DeepEqual(resBody, tt.want.resBody):
-				t.Errorf("newAccessToken() responseBody = %+v, want %+v", resBody, tt.want.resBody)
+				t.Errorf("SendRequest() responseBody = %+v, want %+v", resBody, tt.want.resBody)
 			case !reflect.DeepEqual(err, tt.want.err):
-				t.Errorf("newAccessToken() err = %+v, want %+v", err, tt.want.err)
+				t.Errorf("SendRequest() err = %+v, want %+v", err, tt.want.err)
+			}
+		})
+	}
+}
+
+func Test_jwtBearer_tokenExpired(t *testing.T) {
+	tests := []struct {
+		name            string
+		tokenExpiration time.Time
+		want            bool
+	}{
+		{
+			name:            "TokenExpired",
+			tokenExpiration: time.Now().Add(-1 * time.Hour),
+			want:            true,
+		},
+		{
+			name:            "TokenNotExpired",
+			tokenExpiration: time.Now().Add(1 * time.Hour),
+			want:            false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &jwtBearer{
+				accessTokenMutex: &sync.RWMutex{},
+				tokenExpiration:  tt.tokenExpiration,
+			}
+			if got := c.tokenExpired(); got != tt.want {
+				t.Errorf("jwtBearer.tokenExpired() = %v, want %v", got, tt.want)
 			}
 		})
 	}

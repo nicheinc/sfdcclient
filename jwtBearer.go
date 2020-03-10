@@ -33,6 +33,7 @@ type jwtBearer struct {
 
 	// Cached access token issued by Salesforce
 	accessToken      string
+	tokenExpiration  time.Time
 	accessTokenMutex *sync.RWMutex
 }
 
@@ -78,13 +79,14 @@ func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username str
 // see https://help.salesforce.com/articleView?id=remoteaccess_oauth_jwt_flow.htm
 func (c *jwtBearer) newAccessToken() error {
 	// Create JWT
+	tokenExpiration := time.Now().Add(c.tokenExpTimeout)
 	token := jwt.NewWithClaims(
 		jwt.SigningMethodRS256,
 		jwt.StandardClaims{
 			Issuer:    c.consumerKey,
 			Audience:  c.authServerURL,
 			Subject:   c.username,
-			ExpiresAt: time.Now().Add(c.tokenExpTimeout).UTC().Unix(),
+			ExpiresAt: tokenExpiration.UTC().Unix(),
 		},
 	)
 	// Sign JWT with the private key
@@ -133,10 +135,18 @@ func (c *jwtBearer) newAccessToken() error {
 	}
 
 	c.accessTokenMutex.Lock()
+	defer c.accessTokenMutex.Unlock()
 	c.accessToken = tokenRes.AccessToken
-	c.accessTokenMutex.Unlock()
+	c.tokenExpiration = tokenExpiration
 
 	return nil
+}
+
+func (c *jwtBearer) tokenExpired() bool {
+	c.accessTokenMutex.RLock()
+	defer c.accessTokenMutex.RUnlock()
+	now := time.Now()
+	return c.tokenExpiration.Before(now)
 }
 
 // SendRequest sends a n HTTP request as specified by its function parameters
@@ -145,6 +155,14 @@ func (c *jwtBearer) newAccessToken() error {
 func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, headers http.Header, requestBody []byte) (int, []byte, error) {
 	url := c.instanceURL + relURL
 	var err error
+
+	// If the cached access token is expired, get a new one
+	if c.tokenExpired() {
+		err := c.newAccessToken()
+		if err != nil {
+			return -1, nil, err
+		}
+	}
 
 	// Issue the request to salesforce
 	statusCode, resBody, err := c.sendRequest(ctx, method, url, headers, requestBody)
@@ -164,11 +182,11 @@ func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, heade
 				// Retry the original request
 				statusCode, resBody, err = c.sendRequest(ctx, method, url, headers, requestBody)
 				if err != nil {
-					return statusCode, nil, err
+					return statusCode, resBody, err
 				}
 			}
 		} else {
-			return statusCode, nil, err
+			return statusCode, resBody, err
 		}
 	}
 
@@ -221,9 +239,9 @@ func (c jwtBearer) sendRequest(ctx context.Context, method, url string, headers 
 			// The salesforce error response body was in an unexpected and incompatible format
 			return res.StatusCode, nil, err
 		}
-		return res.StatusCode, nil, &errs
+		return res.StatusCode, resBytes, &errs
 	default:
-		return res.StatusCode, nil, fmt.Errorf("unexpected HTTP status code: %d", res.StatusCode)
+		return res.StatusCode, resBytes, fmt.Errorf("unexpected HTTP status code: %d", res.StatusCode)
 	}
 
 	return res.StatusCode, resBytes, nil
