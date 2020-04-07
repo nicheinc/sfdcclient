@@ -27,7 +27,7 @@ type OAuthErr struct {
 }
 
 func (e *OAuthErr) Error() string {
-	return fmt.Sprintf("error code: %s, description: %s", e.Code, e.Description)
+	return fmt.Sprintf("OAuth authorization error code: %s, description: %s", e.Code, e.Description)
 }
 
 /**********************************************/

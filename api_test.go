@@ -20,7 +20,7 @@ func TestOAuthErr_Error(t *testing.T) {
 				Code:        "invalid_grant",
 				Description: "Session expired or invalid",
 			},
-			want: "error code: invalid_grant, description: Session expired or invalid",
+			want: "OAuth authorization error code: invalid_grant, description: Session expired or invalid",
 		},
 	}
 	for _, tt := range tests {

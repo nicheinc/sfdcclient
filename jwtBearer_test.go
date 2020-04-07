@@ -63,11 +63,12 @@ func TestNewClientWithJWTBearer(t *testing.T) {
 	defer testTokenErrorServer.Close()
 
 	type args struct {
-		isProd      bool
-		instanceURL string
-		consumerKey string
-		username    string
-		privateKey  []byte
+		isProd        bool
+		instanceURL   string
+		consumerKey   string
+		username      string
+		privateKey    []byte
+		tokenDuration time.Duration
 	}
 	tests := []struct {
 		name    string
@@ -76,18 +77,27 @@ func TestNewClientWithJWTBearer(t *testing.T) {
 		wantErr bool
 	}{
 		{
+			name: "Error/TokenDurationTooSmall",
+			args: args{
+				tokenDuration: 1 * time.Second,
+			},
+			wantErr: true,
+		},
+		{
 			name: "Error/ParseRSAPrivateKeyFromPEM",
 			args: args{
-				isProd:     true,
-				privateKey: nil,
+				isProd:        true,
+				privateKey:    nil,
+				tokenDuration: 10 * time.Second,
 			},
 			wantErr: true,
 		},
 		{
 			name: "ErrorGettingToken",
 			args: args{
-				instanceURL: testTokenErrorServer.URL,
-				privateKey:  testRSAPrivateKeyBytes,
+				instanceURL:   testTokenErrorServer.URL,
+				privateKey:    testRSAPrivateKeyBytes,
+				tokenDuration: 10 * time.Second,
 			},
 			want: &jwtBearer{
 				client:           http.Client{},
@@ -101,15 +111,15 @@ func TestNewClientWithJWTBearer(t *testing.T) {
 		{
 			name: "Success",
 			args: args{
-				isProd:      true,
-				instanceURL: testTokenSuccessServer.URL,
-				privateKey:  testRSAPrivateKeyBytes,
+				isProd:        true,
+				instanceURL:   testTokenSuccessServer.URL,
+				privateKey:    testRSAPrivateKeyBytes,
+				tokenDuration: 10 * time.Second,
 			},
 			want: &jwtBearer{
-				client:      http.Client{},
-				instanceURL: testTokenSuccessServer.URL,
-				username:    "my@email.com",
-
+				client:           http.Client{},
+				instanceURL:      testTokenSuccessServer.URL,
+				username:         "my@email.com",
 				rsaPrivateKey:    testRSAPrivateKey,
 				accessTokenMutex: &sync.RWMutex{},
 				authServerURL:    testTokenErrorServer.URL,
@@ -119,7 +129,7 @@ func TestNewClientWithJWTBearer(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewClientWithJWTBearer(tt.args.isProd, tt.args.instanceURL, tt.args.consumerKey, tt.args.username, tt.args.privateKey, time.Second, *http.DefaultClient)
+			_, err := NewClientWithJWTBearer(tt.args.isProd, tt.args.instanceURL, tt.args.consumerKey, tt.args.username, tt.args.privateKey, tt.args.tokenDuration, *http.DefaultClient)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewClientWithJWTBearer() error = %+v, wantErr %+v", err != nil, tt.wantErr)
 			}
@@ -616,7 +626,7 @@ func TestClient_SendRequest(t *testing.T) {
 				relURL: "/something",
 			},
 			want: expected{
-				statusCode: testServerNewTokenErrStatusCode,
+				statusCode: -1,
 				err:        &testServerNewTokenErrErr,
 			},
 		},
@@ -657,36 +667,6 @@ func TestClient_SendRequest(t *testing.T) {
 				t.Errorf("SendRequest() responseBody = %+v, want %+v", resBody, tt.want.resBody)
 			case !reflect.DeepEqual(err, tt.want.err):
 				t.Errorf("SendRequest() err = %+v, want %+v", err, tt.want.err)
-			}
-		})
-	}
-}
-
-func Test_jwtBearer_tokenExpired(t *testing.T) {
-	tests := []struct {
-		name            string
-		tokenExpiration time.Time
-		want            bool
-	}{
-		{
-			name:            "TokenExpired",
-			tokenExpiration: time.Now().Add(-1 * time.Hour),
-			want:            true,
-		},
-		{
-			name:            "TokenNotExpired",
-			tokenExpiration: time.Now().Add(1 * time.Hour),
-			want:            false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := &jwtBearer{
-				accessTokenMutex: &sync.RWMutex{},
-				tokenExpiration:  tt.tokenExpiration,
-			}
-			if got := c.tokenExpired(); got != tt.want {
-				t.Errorf("jwtBearer.tokenExpired() = %v, want %v", got, tt.want)
 			}
 		})
 	}

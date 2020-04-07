@@ -15,6 +15,11 @@ import (
 	"github.com/dgrijalva/jwt-go"
 )
 
+const (
+	tokenRefreshMargin = 2 * time.Second
+	minTokenDuration   = 5 * time.Second
+)
+
 type jwtBearer struct {
 	// Underlying HTTP client used for making all HTTP requests to salesforce
 	// note that the configuration of this HTTP client will affect all HTTP
@@ -25,11 +30,11 @@ type jwtBearer struct {
 	instanceURL string
 
 	// Variables needed for the generation and signing of the JWT token
-	rsaPrivateKey   *rsa.PrivateKey
-	consumerKey     string
-	username        string
-	authServerURL   string
-	tokenExpTimeout time.Duration
+	rsaPrivateKey *rsa.PrivateKey
+	consumerKey   string
+	username      string
+	authServerURL string
+	tokenDuration time.Duration
 
 	// Cached access token issued by Salesforce
 	accessToken      string
@@ -37,7 +42,11 @@ type jwtBearer struct {
 	accessTokenMutex *sync.RWMutex
 }
 
-func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username string, privateKey []byte, tokenExpTimeout time.Duration, httpClient http.Client) (Client, error) {
+func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username string, privateKey []byte, tokenDuration time.Duration, httpClient http.Client) (Client, error) {
+	if tokenDuration < minTokenDuration {
+		return nil, fmt.Errorf("tokenDuration must be greating or equal than 2 seconds, got: %s", tokenDuration)
+	}
+
 	baseSFURL := "https://%s.salesforce.com"
 
 	var authServerURL string
@@ -79,7 +88,7 @@ func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username str
 // see https://help.salesforce.com/articleView?id=remoteaccess_oauth_jwt_flow.htm
 func (c *jwtBearer) newAccessToken() error {
 	// Create JWT
-	tokenExpiration := time.Now().Add(c.tokenExpTimeout)
+	tokenExpiration := time.Now().Add(c.tokenDuration)
 	token := jwt.NewWithClaims(
 		jwt.SigningMethodRS256,
 		jwt.StandardClaims{
@@ -142,13 +151,6 @@ func (c *jwtBearer) newAccessToken() error {
 	return nil
 }
 
-func (c *jwtBearer) tokenExpired() bool {
-	c.accessTokenMutex.RLock()
-	defer c.accessTokenMutex.RUnlock()
-	now := time.Now()
-	return c.tokenExpiration.Before(now)
-}
-
 // SendRequest sends a n HTTP request as specified by its function parameters
 // If the server responds with an unauthorized 401 HTTP status code, the client attempts
 // to get a new authorization access token and retries the request once
@@ -156,8 +158,11 @@ func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, heade
 	url := c.instanceURL + relURL
 	var err error
 
-	// If the cached access token is expired, get a new one
-	if c.tokenExpired() {
+	c.accessTokenMutex.RLock()
+	tokenExpiration := c.tokenExpiration
+	c.accessTokenMutex.RUnlock()
+	// If the cached token is about to expire, get a new one preemptively
+	if tokenExpiration.Sub(time.Now()) <= tokenRefreshMargin {
 		err := c.newAccessToken()
 		if err != nil {
 			return -1, nil, err
@@ -177,7 +182,7 @@ func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, heade
 			if statusCode == http.StatusUnauthorized {
 				err := c.newAccessToken()
 				if err != nil {
-					return statusCode, nil, err
+					return -1, nil, err
 				}
 				// Retry the original request
 				statusCode, resBody, err = c.sendRequest(ctx, method, url, headers, requestBody)
