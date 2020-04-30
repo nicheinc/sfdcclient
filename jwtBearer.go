@@ -44,7 +44,7 @@ type jwtBearer struct {
 
 func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username string, privateKey []byte, tokenDuration time.Duration, httpClient http.Client) (Client, error) {
 	if tokenDuration < minTokenDuration {
-		return nil, fmt.Errorf("tokenDuration must be greating or equal than 2 seconds, got: %s", tokenDuration)
+		return nil, fmt.Errorf("tokenDuration must be greating or equal than %s, got: %s", minTokenDuration, tokenDuration)
 	}
 
 	baseSFURL := "https://%s.salesforce.com"
@@ -168,7 +168,6 @@ func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, heade
 			return -1, nil, err
 		}
 	}
-
 	// Issue the request to salesforce
 	statusCode, resBody, err := c.sendRequest(ctx, method, url, headers, requestBody)
 	if err != nil {
@@ -180,9 +179,9 @@ func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, heade
 			// hence, we attempt to update the cached access token and retry the earlier request once
 			// see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm
 			if statusCode == http.StatusUnauthorized {
-				err := c.newAccessToken()
-				if err != nil {
-					return -1, nil, err
+				errAuth := c.newAccessToken()
+				if errAuth != nil {
+					return -1, nil, errAuth
 				}
 				// Retry the original request
 				statusCode, resBody, err = c.sendRequest(ctx, method, url, headers, requestBody)
@@ -190,12 +189,10 @@ func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, heade
 					return statusCode, resBody, err
 				}
 			}
-		} else {
-			return statusCode, resBody, err
 		}
 	}
 
-	return statusCode, resBody, nil
+	return statusCode, resBody, err
 }
 
 func (c jwtBearer) sendRequest(ctx context.Context, method, url string, headers http.Header, requestBody []byte) (int, []byte, error) {
