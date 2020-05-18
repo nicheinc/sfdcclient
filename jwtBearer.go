@@ -47,23 +47,16 @@ func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username str
 		return nil, fmt.Errorf("tokenDuration must be greating or equal than %s, got: %s", minTokenDuration, tokenDuration)
 	}
 
-	baseSFURL := "https://%s.salesforce.com"
-
-	var authServerURL string
-	if sandbox {
-		authServerURL = fmt.Sprintf(baseSFURL, "test")
-	} else {
-		authServerURL = fmt.Sprintf(baseSFURL, "login")
-	}
-
 	jwtBearer := jwtBearer{
 		client:           httpClient,
 		instanceURL:      instanceURL,
-		authServerURL:    authServerURL,
 		consumerKey:      consumerKey,
 		username:         username,
 		accessTokenMutex: &sync.RWMutex{},
+		tokenDuration:    tokenDuration,
 	}
+
+	baseSFURL := "https://%s.salesforce.com"
 
 	if sandbox {
 		jwtBearer.authServerURL = fmt.Sprintf(baseSFURL, "test")
