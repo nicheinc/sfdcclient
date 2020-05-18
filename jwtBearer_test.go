@@ -105,6 +105,7 @@ func TestNewClientWithJWTBearer(t *testing.T) {
 				rsaPrivateKey:    testRSAPrivateKey,
 				accessTokenMutex: &sync.RWMutex{},
 				authServerURL:    testTokenErrorServer.URL,
+				errMutex:         &sync.RWMutex{},
 			},
 			wantErr: true,
 		},
@@ -124,6 +125,7 @@ func TestNewClientWithJWTBearer(t *testing.T) {
 				accessTokenMutex: &sync.RWMutex{},
 				authServerURL:    testTokenErrorServer.URL,
 				accessToken:      "aSalesforceAccessToken",
+				errMutex:         &sync.RWMutex{},
 			},
 		},
 	}
@@ -181,6 +183,7 @@ func TestClient_newAccessToken(t *testing.T) {
 		authServerURL    string
 		accessToken      string
 		accessTokenMutex *sync.RWMutex
+		errMutex         *sync.RWMutex
 	}
 	tests := []struct {
 		name    string
@@ -195,6 +198,7 @@ func TestClient_newAccessToken(t *testing.T) {
 				instanceURL:      testServerBadJSON.URL,
 				rsaPrivateKey:    testRSAPrivateKey,
 				accessTokenMutex: &sync.RWMutex{},
+				errMutex:         &sync.RWMutex{},
 			},
 			wantErr: badJSONErr,
 		},
@@ -206,6 +210,7 @@ func TestClient_newAccessToken(t *testing.T) {
 				instanceURL:      testServerSuccess.URL,
 				accessTokenMutex: &sync.RWMutex{},
 				rsaPrivateKey:    &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: big.NewInt(1)}},
+				errMutex:         &sync.RWMutex{},
 			},
 			wantErr: rsa.ErrMessageTooLong,
 		},
@@ -217,6 +222,7 @@ func TestClient_newAccessToken(t *testing.T) {
 				instanceURL:      testServerBadReq.URL,
 				rsaPrivateKey:    testRSAPrivateKey,
 				accessTokenMutex: &sync.RWMutex{},
+				errMutex:         &sync.RWMutex{},
 			},
 			wantErr: &OAuthErr{
 				Code:        "someSalesforceError",
@@ -231,6 +237,7 @@ func TestClient_newAccessToken(t *testing.T) {
 				instanceURL:      testServerBadReqBadJson.URL,
 				rsaPrivateKey:    testRSAPrivateKey,
 				accessTokenMutex: &sync.RWMutex{},
+				errMutex:         &sync.RWMutex{},
 			},
 			wantErr: badJSONErr,
 		},
@@ -242,6 +249,7 @@ func TestClient_newAccessToken(t *testing.T) {
 				instanceURL:      testServerErr.URL,
 				rsaPrivateKey:    testRSAPrivateKey,
 				accessTokenMutex: &sync.RWMutex{},
+				errMutex:         &sync.RWMutex{},
 			},
 			wantErr: fmt.Errorf("%s responded with an unexpected HTTP status code: %d",
 				testServerErr.URL+"/services/oauth2/token",
@@ -256,6 +264,7 @@ func TestClient_newAccessToken(t *testing.T) {
 				instanceURL:      testServerSuccess.URL,
 				rsaPrivateKey:    testRSAPrivateKey,
 				accessTokenMutex: &sync.RWMutex{},
+				errMutex:         &sync.RWMutex{},
 			},
 			wantErr: nil,
 		},
@@ -271,6 +280,7 @@ func TestClient_newAccessToken(t *testing.T) {
 				authServerURL:    tt.fields.authServerURL,
 				accessToken:      tt.fields.accessToken,
 				accessTokenMutex: tt.fields.accessTokenMutex,
+				errMutex:         tt.fields.errMutex,
 			}
 			gotErr := c.newAccessToken()
 			if !reflect.DeepEqual(gotErr, tt.wantErr) {
@@ -657,6 +667,7 @@ func TestClient_SendRequest(t *testing.T) {
 			accessToken:      tt.fields.accessToken,
 			tokenExpiration:  tt.fields.tokenExpiration,
 			accessTokenMutex: &sync.RWMutex{},
+			errMutex:         &sync.RWMutex{},
 		}
 		t.Run(tt.name, func(t *testing.T) {
 			statusCode, resBody, err := c.SendRequest(context.Background(), tt.args.method, tt.args.relURL, tt.args.headers, tt.args.requestBody)
