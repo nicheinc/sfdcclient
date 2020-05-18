@@ -162,8 +162,8 @@ func (c jwtBearer) checkErr() error {
 
 func (c jwtBearer) setErr(err error) {
 	c.errMutex.Lock()
+	defer c.errMutex.Unlock()
 	c.err = err
-	c.errMutex.Unlock()
 	return
 }
 
