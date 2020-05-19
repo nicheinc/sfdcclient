@@ -77,9 +77,9 @@ func TestNewClientWithJWTBearer(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "Error/TokenDurationTooSmall",
+			name: "Error/TokenDurationTooBig",
 			args: args{
-				tokenDuration: 1 * time.Second,
+				tokenDuration: 4 * time.Minute,
 			},
 			wantErr: true,
 		},
@@ -281,6 +281,7 @@ func TestClient_newAccessToken(t *testing.T) {
 				accessToken:      tt.fields.accessToken,
 				accessTokenMutex: tt.fields.accessTokenMutex,
 				errMutex:         tt.fields.errMutex,
+				err:              tt.wantErr,
 			}
 			gotErr := c.newAccessToken()
 			if !reflect.DeepEqual(gotErr, tt.wantErr) {
@@ -565,12 +566,12 @@ func TestClient_SendRequest(t *testing.T) {
 		requestBody []byte
 	}
 	type fields struct {
-		instanceURL     string
-		consumerKey     string
-		username        string
-		authServerURL   string
-		accessToken     string
-		tokenExpiration time.Time
+		instanceURL   string
+		consumerKey   string
+		username      string
+		authServerURL string
+		accessToken   string
+		err           error
 	}
 	type expected struct {
 		statusCode int
@@ -584,10 +585,31 @@ func TestClient_SendRequest(t *testing.T) {
 		want   expected
 	}{
 		{
+			name: "jwtBearerWithError/NewTokenError",
+			fields: fields{
+				instanceURL: testServerNewTokenErr.URL,
+				err:         errors.New("something bad happened"),
+			},
+			want: expected{
+				statusCode: -1,
+				err:        &testServerNewTokenErrErr,
+			},
+		},
+		{
+			name: "jwtBearerWithError/NewTokenSuccess",
+			fields: fields{
+				instanceURL: testServerUnauthorizedNewTokenSuccess.URL,
+				err:         errors.New("something bad happened"),
+			},
+			want: expected{
+				statusCode: testServerUnauthorizedNewTokenSuccessStatusCode,
+				resBody:    testServerUnauthorizedNewTokenSuccessBody,
+			},
+		},
+		{
 			name: "sendRequest/Error",
 			fields: fields{
-				instanceURL:     testServerBadResFmt.URL,
-				tokenExpiration: time.Now().Add(1 * time.Hour),
+				instanceURL: testServerBadResFmt.URL,
 			},
 			want: expected{
 				statusCode: testServerBadResFmtStatusCode,
@@ -597,8 +619,7 @@ func TestClient_SendRequest(t *testing.T) {
 		{
 			name: "ExpiredToken/NewTokenError",
 			fields: fields{
-				instanceURL:     testServerNewTokenErr.URL,
-				tokenExpiration: time.Now().Add(-1 * time.Hour),
+				instanceURL: testServerNewTokenErr.URL,
 			},
 			args: args{
 				method: http.MethodGet,
@@ -612,8 +633,7 @@ func TestClient_SendRequest(t *testing.T) {
 		{
 			name: "Unauthorized/NewTokenSuccess/Request/Error",
 			fields: fields{
-				instanceURL:     testServerGetNewToken.URL,
-				tokenExpiration: time.Now().Add(1 * time.Hour),
+				instanceURL: testServerGetNewToken.URL,
 			},
 			args: args{
 				method: http.MethodGet,
@@ -628,8 +648,7 @@ func TestClient_SendRequest(t *testing.T) {
 		{
 			name: "Unauthorized/NewTokenError",
 			fields: fields{
-				instanceURL:     testServerNewTokenErr.URL,
-				tokenExpiration: time.Now().Add(1 * time.Hour),
+				instanceURL: testServerNewTokenErr.URL,
 			},
 			args: args{
 				method: http.MethodGet,
@@ -643,8 +662,7 @@ func TestClient_SendRequest(t *testing.T) {
 		{
 			name: "Unauthorized/NewToken/Success",
 			fields: fields{
-				instanceURL:     testServerUnauthorizedNewTokenSuccess.URL,
-				tokenExpiration: time.Now().Add(1 * time.Hour),
+				instanceURL: testServerUnauthorizedNewTokenSuccess.URL,
 			},
 			args: args{
 				method: http.MethodGet,
@@ -665,9 +683,9 @@ func TestClient_SendRequest(t *testing.T) {
 			username:         tt.fields.username,
 			authServerURL:    tt.fields.authServerURL,
 			accessToken:      tt.fields.accessToken,
-			tokenExpiration:  tt.fields.tokenExpiration,
 			accessTokenMutex: &sync.RWMutex{},
 			errMutex:         &sync.RWMutex{},
+			err:              tt.fields.err,
 		}
 		t.Run(tt.name, func(t *testing.T) {
 			statusCode, resBody, err := c.SendRequest(context.Background(), tt.args.method, tt.args.relURL, tt.args.headers, tt.args.requestBody)

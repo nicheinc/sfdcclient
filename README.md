@@ -37,7 +37,7 @@ func main() {
 		"your_connected_app_consumer_key",
 		"username_using_the_connected_app@email_provider.com",
 		privateKeyBytes,
-		3*time.Second, // request timeout for the OAuth new token HTTP request
+		3*time.Second, // request timeout for the OAuth new token HTTP request (3 minute max)
 		http.Client{ // underlying HTTP client making all HTTP calls
 			Timeout: 5 * time.Second,
 		},

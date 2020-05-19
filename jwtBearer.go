@@ -16,8 +16,7 @@ import (
 )
 
 const (
-	tokenRefreshMargin = 2 * time.Second
-	minTokenDuration   = 5 * time.Second
+	maxTokenDuration = 3 * time.Minute
 )
 
 type jwtBearer struct {
@@ -38,7 +37,6 @@ type jwtBearer struct {
 
 	// Cached access token issued by Salesforce
 	accessToken      string
-	tokenExpiration  time.Time
 	accessTokenMutex *sync.RWMutex
 
 	err      error
@@ -46,8 +44,8 @@ type jwtBearer struct {
 }
 
 func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username string, privateKey []byte, tokenDuration time.Duration, httpClient http.Client) (Client, error) {
-	if tokenDuration < minTokenDuration {
-		return nil, fmt.Errorf("tokenDuration must be greating or equal than %s, got: %s", minTokenDuration, tokenDuration)
+	if tokenDuration > maxTokenDuration {
+		return nil, fmt.Errorf("tokenDuration must be less or equal to %s, got: %s", maxTokenDuration, tokenDuration)
 	}
 
 	jwtBearer := jwtBearer{
@@ -88,14 +86,13 @@ func (c *jwtBearer) newAccessToken() error {
 		c.setErr(err)
 	}()
 	// Create JWT
-	tokenExpiration := time.Now().Add(c.tokenDuration)
 	token := jwt.NewWithClaims(
 		jwt.SigningMethodRS256,
 		jwt.StandardClaims{
 			Issuer:    c.consumerKey,
 			Audience:  c.authServerURL,
 			Subject:   c.username,
-			ExpiresAt: tokenExpiration.UTC().Unix(),
+			ExpiresAt: time.Now().Add(c.tokenDuration).UTC().Unix(),
 		},
 	)
 	// Sign JWT with the private key
@@ -149,7 +146,6 @@ func (c *jwtBearer) newAccessToken() error {
 	c.accessTokenMutex.Lock()
 	defer c.accessTokenMutex.Unlock()
 	c.accessToken = tokenRes.AccessToken
-	c.tokenExpiration = tokenExpiration
 
 	return nil
 }
@@ -171,17 +167,13 @@ func (c jwtBearer) setErr(err error) {
 // If the server responds with an unauthorized 401 HTTP status code, the client attempts
 // to get a new authorization access token and retries the request once
 func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, headers http.Header, requestBody []byte) (int, []byte, error) {
-	var err error
 	url := c.instanceURL + relURL
 
-	c.accessTokenMutex.RLock()
-	tokenExpiration := c.tokenExpiration
-	c.accessTokenMutex.RUnlock()
-	// If the cached token is about to expire, get a new one preemptively
-	if c.checkErr() != nil || tokenExpiration.Sub(time.Now()) <= tokenRefreshMargin {
-		err := c.newAccessToken()
-		if err != nil {
-			return -1, nil, err
+	// Check if there jwtBearer had an error in the last time it tried to authenticate with salesforce
+	if c.checkErr() != nil {
+		errAuth := c.newAccessToken()
+		if errAuth != nil {
+			return -1, nil, errAuth
 		}
 	}
 	// Issue the request to salesforce
