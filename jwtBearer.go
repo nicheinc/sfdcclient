@@ -16,8 +16,7 @@ import (
 )
 
 const (
-	tokenRefreshMargin = 2 * time.Second
-	minTokenDuration   = 5 * time.Second
+	maxTokenDuration = 3 * time.Minute
 )
 
 type jwtBearer struct {
@@ -38,33 +37,28 @@ type jwtBearer struct {
 
 	// Cached access token issued by Salesforce
 	accessToken      string
-	tokenExpiration  time.Time
 	accessTokenMutex *sync.RWMutex
+
+	err      error
+	errMutex *sync.RWMutex
 }
 
 func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username string, privateKey []byte, tokenDuration time.Duration, httpClient http.Client) (Client, error) {
-	if tokenDuration < minTokenDuration {
-		return nil, fmt.Errorf("tokenDuration must be greating or equal than %s, got: %s", minTokenDuration, tokenDuration)
-	}
-
-	baseSFURL := "https://%s.salesforce.com"
-
-	var authServerURL string
-	if sandbox {
-		authServerURL = fmt.Sprintf(baseSFURL, "test")
-	} else {
-		authServerURL = fmt.Sprintf(baseSFURL, "login")
+	if tokenDuration > maxTokenDuration {
+		return nil, fmt.Errorf("tokenDuration must be less or equal to %s, got: %s", maxTokenDuration, tokenDuration)
 	}
 
 	jwtBearer := jwtBearer{
 		client:           httpClient,
 		instanceURL:      instanceURL,
-		authServerURL:    authServerURL,
 		consumerKey:      consumerKey,
 		username:         username,
 		accessTokenMutex: &sync.RWMutex{},
+		tokenDuration:    tokenDuration,
+		errMutex:         &sync.RWMutex{},
 	}
 
+	baseSFURL := "https://%s.salesforce.com"
 	if sandbox {
 		jwtBearer.authServerURL = fmt.Sprintf(baseSFURL, "test")
 	} else {
@@ -77,25 +71,28 @@ func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username str
 	}
 
 	if err = jwtBearer.newAccessToken(); err != nil {
-		return nil, err
+		return &jwtBearer, err
 	}
 
-	return &jwtBearer, nil
+	return &jwtBearer, jwtBearer.err
 }
 
 // newAccessToken updates the cached access token if salesforce successfully grants one
 // This function follows the "OAuth 2.0 JWT Bearer Flow for Server-to-Server Integration"
 // see https://help.salesforce.com/articleView?id=remoteaccess_oauth_jwt_flow.htm
 func (c *jwtBearer) newAccessToken() error {
+	var err error
+	defer func() {
+		c.setErr(err)
+	}()
 	// Create JWT
-	tokenExpiration := time.Now().Add(c.tokenDuration)
 	token := jwt.NewWithClaims(
 		jwt.SigningMethodRS256,
 		jwt.StandardClaims{
 			Issuer:    c.consumerKey,
 			Audience:  c.authServerURL,
 			Subject:   c.username,
-			ExpiresAt: tokenExpiration.UTC().Unix(),
+			ExpiresAt: time.Now().Add(c.tokenDuration).UTC().Unix(),
 		},
 	)
 	// Sign JWT with the private key
@@ -130,12 +127,15 @@ func (c *jwtBearer) newAccessToken() error {
 		break
 	case http.StatusBadRequest:
 		var errRes OAuthErr
-		if err := json.Unmarshal(resBytes, &errRes); err != nil {
-			return err
+		err = json.Unmarshal(resBytes, &errRes)
+		if err == nil {
+			err = &errRes
 		}
-		return &errRes
 	default:
-		return fmt.Errorf("%s responded with an unexpected HTTP status code: %d", oauthTokenURL, res.StatusCode)
+		err = fmt.Errorf("%s responded with an unexpected HTTP status code: %d", oauthTokenURL, res.StatusCode)
+	}
+	if err != nil {
+		return err
 	}
 
 	var tokenRes AccessTokenResponse
@@ -146,9 +146,21 @@ func (c *jwtBearer) newAccessToken() error {
 	c.accessTokenMutex.Lock()
 	defer c.accessTokenMutex.Unlock()
 	c.accessToken = tokenRes.AccessToken
-	c.tokenExpiration = tokenExpiration
 
 	return nil
+}
+
+func (c jwtBearer) checkErr() error {
+	c.errMutex.RLock()
+	defer c.errMutex.RUnlock()
+	return c.err
+}
+
+func (c jwtBearer) setErr(err error) {
+	c.errMutex.Lock()
+	defer c.errMutex.Unlock()
+	c.err = err
+	return
 }
 
 // SendRequest sends a n HTTP request as specified by its function parameters
@@ -156,16 +168,12 @@ func (c *jwtBearer) newAccessToken() error {
 // to get a new authorization access token and retries the request once
 func (c jwtBearer) SendRequest(ctx context.Context, method, relURL string, headers http.Header, requestBody []byte) (int, []byte, error) {
 	url := c.instanceURL + relURL
-	var err error
 
-	c.accessTokenMutex.RLock()
-	tokenExpiration := c.tokenExpiration
-	c.accessTokenMutex.RUnlock()
-	// If the cached token is about to expire, get a new one preemptively
-	if tokenExpiration.Sub(time.Now()) <= tokenRefreshMargin {
-		err := c.newAccessToken()
-		if err != nil {
-			return -1, nil, err
+	// Check if there jwtBearer had an error in the last time it tried to authenticate with salesforce
+	if c.checkErr() != nil {
+		errAuth := c.newAccessToken()
+		if errAuth != nil {
+			return -1, nil, errAuth
 		}
 	}
 	// Issue the request to salesforce
