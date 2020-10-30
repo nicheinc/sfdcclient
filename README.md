@@ -1,5 +1,8 @@
 # sfdcclient
 
+![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/nicheinc/sfdcclient)
+[![Go Report Card](https://goreportcard.com/badge/github.com/nicheinc/sfdcclient)](https://goreportcard.com/report/github.com/nicheinc/sfdcclient)
+
 sfdcclient is a golang package implementing a pseudo-wrapper of an HTTP client,
 for making requests to salesforce's REST API through a connected app,
 making use of the [Salesforce OAuth 2.0 JWT Bearer Flow for Server-to-Server](https://help.salesforce.com/articleView?id=remoteaccess_oauth_jwt_flow.htm&type=5)
