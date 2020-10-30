@@ -19,6 +19,7 @@ authorization flow.
 package main
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -52,7 +53,7 @@ func main() {
 	}
 
 	url := "/services/data/v47.0/sobjects/MySObjectName/describe" // note that this is a relative URL to the salesforce instance server URL
-	statusCode, resBody, err := client.SendRequest(ctx, http.MethodGet, url, nil, nil)
+	statusCode, resBody, err := client.SendRequest(context.Background(), http.MethodGet, url, nil, nil)
 	if err != nil {
 		log.Fatalf("Error sending salesforce request: %s", err)
 	}
