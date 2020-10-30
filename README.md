@@ -1,7 +1,9 @@
 # sfdcclient
 
-![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/nicheinc/sfdcclient)
+![GitHub tag (latest SemVer)](https://img.shields.io/github/v/tag/nicheinc/sfdcclient)
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/nicheinc/sfdcclient)
 [![Go Report Card](https://goreportcard.com/badge/github.com/nicheinc/sfdcclient)](https://goreportcard.com/report/github.com/nicheinc/sfdcclient)
+![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/nicheinc/sfdcclient)
 
 sfdcclient is a golang package implementing a pseudo-wrapper of an HTTP client,
 for making requests to salesforce's REST API through a connected app,
