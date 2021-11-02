@@ -77,13 +77,6 @@ func TestNewClientWithJWTBearer(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "Error/TokenDurationTooBig",
-			args: args{
-				tokenDuration: 4 * time.Minute,
-			},
-			wantErr: true,
-		},
-		{
 			name: "Error/ParseRSAPrivateKeyFromPEM",
 			args: args{
 				isProd:        true,
