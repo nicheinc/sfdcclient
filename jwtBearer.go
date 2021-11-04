@@ -15,10 +15,6 @@ import (
 	"github.com/dgrijalva/jwt-go"
 )
 
-const (
-	maxTokenDuration = 3 * time.Minute
-)
-
 type jwtBearer struct {
 	// Underlying HTTP client used for making all HTTP requests to salesforce
 	// note that the configuration of this HTTP client will affect all HTTP
@@ -44,10 +40,6 @@ type jwtBearer struct {
 }
 
 func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username string, privateKey []byte, tokenDuration time.Duration, httpClient http.Client) (Client, error) {
-	if tokenDuration > maxTokenDuration {
-		return nil, fmt.Errorf("tokenDuration must be less or equal to %s, got: %s", maxTokenDuration, tokenDuration)
-	}
-
 	jwtBearer := jwtBearer{
 		client:           httpClient,
 		instanceURL:      instanceURL,
