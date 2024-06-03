@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/nicheinc/sfdcclient"
+	"github.com/nicheinc/sfdcclient/v2"
 	"github.com/peterbourgon/ff/v3"
 )
 

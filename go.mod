@@ -1,4 +1,4 @@
-module github.com/nicheinc/sfdcclient
+module github.com/nicheinc/sfdcclient/v2
 
 go 1.18
 
