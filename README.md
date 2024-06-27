@@ -11,6 +11,7 @@ making use of the [Salesforce OAuth 2.0 JWT Bearer Flow for Server-to-Server](ht
 authorization flow.
 
 ## Installation
+
 `go get https://github.com/nicheinc/sfdcclient`
 
 ## Example usage
@@ -21,7 +22,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -32,7 +32,7 @@ import (
 
 func main() {
 	// Read your private key into memory
-	privateKeyBytes, err := ioutil.ReadFile(os.ExpandEnv("/path/to/your/private/key/file.key"))
+	privateKeyBytes, err := os.ReadFile(os.ExpandEnv("/path/to/your/private/key/file.key"))
 	if err != nil {
 		log.Fatalf("Error creating logger: %s", err)
 	}

@@ -6,13 +6,13 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type jwtBearer struct {
@@ -98,7 +98,7 @@ func (c *jwtBearer) newAccessToken() error {
 		return err
 	}
 
-	resBytes, err := ioutil.ReadAll(res.Body)
+	resBytes, err := io.ReadAll(res.Body)
 	res.Body.Close()
 	if err != nil {
 		return err
@@ -134,13 +134,14 @@ func (c *jwtBearer) newAccessToken() error {
 
 func (c *jwtBearer) JWT() (string, error) {
 	// Create JWT
+	jwt.MarshalSingleStringAsArray = false
 	token := jwt.NewWithClaims(
 		jwt.SigningMethodRS256,
-		jwt.StandardClaims{
+		jwt.RegisteredClaims{
 			Issuer:    c.consumerKey,
-			Audience:  c.authServerURL,
+			Audience:  []string{c.authServerURL},
 			Subject:   c.username,
-			ExpiresAt: time.Now().Add(c.tokenDuration).UTC().Unix(),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(c.tokenDuration).UTC()),
 		},
 	)
 	// Sign JWT with the private key
@@ -225,7 +226,7 @@ func (c jwtBearer) sendRequest(ctx context.Context, method, url string, headers 
 	if err != nil {
 		return -1, nil, err
 	}
-	resBytes, err := ioutil.ReadAll(res.Body)
+	resBytes, err := io.ReadAll(res.Body)
 	res.Body.Close()
 	if err != nil {
 		return -1, nil, err
