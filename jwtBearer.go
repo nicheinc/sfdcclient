@@ -39,7 +39,7 @@ type jwtBearer struct {
 	errMutex *sync.RWMutex
 }
 
-func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username string, privateKey []byte, tokenDuration time.Duration, httpClient http.Client) (Client, error) {
+func NewClientWithJWTBearer(sandbox bool, instanceURL, consumerKey, username string, privateKey []byte, tokenDuration time.Duration, httpClient http.Client) (*jwtBearer, error) {
 	jwtBearer := jwtBearer{
 		client:           httpClient,
 		instanceURL:      instanceURL,
@@ -78,17 +78,7 @@ func (c *jwtBearer) newAccessToken() error {
 		c.setErr(err)
 	}()
 	// Create JWT
-	token := jwt.NewWithClaims(
-		jwt.SigningMethodRS256,
-		jwt.StandardClaims{
-			Issuer:    c.consumerKey,
-			Audience:  c.authServerURL,
-			Subject:   c.username,
-			ExpiresAt: time.Now().Add(c.tokenDuration).UTC().Unix(),
-		},
-	)
-	// Sign JWT with the private key
-	signedJWT, err := token.SignedString(c.rsaPrivateKey)
+	signedJWT, err := c.JWT()
 	if err != nil {
 		return err
 	}
@@ -140,6 +130,21 @@ func (c *jwtBearer) newAccessToken() error {
 	c.accessToken = tokenRes.AccessToken
 
 	return nil
+}
+
+func (c *jwtBearer) JWT() (string, error) {
+	// Create JWT
+	token := jwt.NewWithClaims(
+		jwt.SigningMethodRS256,
+		jwt.StandardClaims{
+			Issuer:    c.consumerKey,
+			Audience:  c.authServerURL,
+			Subject:   c.username,
+			ExpiresAt: time.Now().Add(c.tokenDuration).UTC().Unix(),
+		},
+	)
+	// Sign JWT with the private key
+	return token.SignedString(c.rsaPrivateKey)
 }
 
 func (c jwtBearer) checkErr() error {
