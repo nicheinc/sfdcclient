@@ -13,7 +13,6 @@ import (
 )
 
 func main() {
-
 	var (
 		sandbox              bool
 		salesforceInstanceID string
