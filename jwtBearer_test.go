@@ -13,12 +13,12 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/nicheinc/expect"
 )
 
 var (
@@ -48,7 +48,38 @@ func init() {
 	}
 }
 
-func TestNewClientWithJWTBearer(t *testing.T) {
+func Test_NewClientWithJWTBearer(t *testing.T) {
+	type args struct {
+		isProd        bool
+		instanceURL   string
+		consumerKey   string
+		username      string
+		privateKey    []byte
+		tokenDuration time.Duration
+	}
+	type testCase struct {
+		name     string
+		args     args
+		want     *jwtBearer
+		errCheck expect.ErrorCheck
+		wantErr  bool
+	}
+	run := func(name string, testCase testCase) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			_, err := NewClientWithJWTBearer(
+				testCase.args.isProd,
+				testCase.args.instanceURL,
+				testCase.args.consumerKey,
+				testCase.args.username,
+				testCase.args.privateKey,
+				testCase.args.tokenDuration,
+				*http.DefaultClient,
+			)
+			testCase.errCheck(t, err)
+		})
+	}
+
 	testTokenSuccessServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(http.StatusOK)
 		rw.Write([]byte(`{"access_token":"aSalesforceAccessToken"}`))
@@ -62,85 +93,97 @@ func TestNewClientWithJWTBearer(t *testing.T) {
 	}))
 	defer testTokenErrorServer.Close()
 
-	type args struct {
-		isProd        bool
-		instanceURL   string
-		consumerKey   string
-		username      string
-		privateKey    []byte
-		tokenDuration time.Duration
-	}
-	tests := []struct {
-		name    string
-		args    args
-		want    *jwtBearer
-		wantErr bool
-	}{
-		{
-			name: "Error/ParseRSAPrivateKeyFromPEM",
-			args: args{
-				isProd:        true,
-				privateKey:    nil,
-				tokenDuration: 10 * time.Second,
-			},
-			wantErr: true,
+	run("Error/ParseRSAPrivateKeyFromPEM", testCase{
+		args: args{
+			isProd:        true,
+			privateKey:    nil,
+			tokenDuration: 10 * time.Second,
 		},
-		{
-			name: "ErrorGettingToken",
-			args: args{
-				instanceURL:   testTokenErrorServer.URL,
-				privateKey:    testRSAPrivateKeyBytes,
-				tokenDuration: 10 * time.Second,
-			},
-			want: &jwtBearer{
-				client:           http.Client{},
-				instanceURL:      testTokenErrorServer.URL,
-				rsaPrivateKey:    testRSAPrivateKey,
-				accessTokenMutex: &sync.RWMutex{},
-				authServerURL:    testTokenErrorServer.URL,
-				errMutex:         &sync.RWMutex{},
-			},
-			wantErr: true,
+		errCheck: expect.ErrorNonNil,
+	})
+	run("Error/GettingToken", testCase{
+		args: args{
+			instanceURL:   testTokenErrorServer.URL,
+			privateKey:    testRSAPrivateKeyBytes,
+			tokenDuration: 10 * time.Second,
 		},
-		{
-			name: "Success",
-			args: args{
-				isProd:        true,
-				instanceURL:   testTokenSuccessServer.URL,
-				privateKey:    testRSAPrivateKeyBytes,
-				tokenDuration: 10 * time.Second,
-			},
-			want: &jwtBearer{
-				client:           http.Client{},
-				instanceURL:      testTokenSuccessServer.URL,
-				username:         "my@email.com",
-				rsaPrivateKey:    testRSAPrivateKey,
-				accessTokenMutex: &sync.RWMutex{},
-				authServerURL:    testTokenErrorServer.URL,
-				accessToken:      "aSalesforceAccessToken",
-				errMutex:         &sync.RWMutex{},
-			},
+		want: &jwtBearer{
+			client:           http.Client{},
+			instanceURL:      testTokenErrorServer.URL,
+			rsaPrivateKey:    testRSAPrivateKey,
+			accessTokenMutex: &sync.RWMutex{},
+			authServerURL:    testTokenErrorServer.URL,
+			errMutex:         &sync.RWMutex{},
 		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewClientWithJWTBearer(tt.args.isProd, tt.args.instanceURL, tt.args.consumerKey, tt.args.username, tt.args.privateKey, tt.args.tokenDuration, *http.DefaultClient)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("NewClientWithJWTBearer() error = %+v, wantErr %+v", err != nil, tt.wantErr)
-			}
-		})
-	}
+		errCheck: expect.ErrorIs(&OAuthErr{
+			Code:        "aSalesforceError",
+			Description: "",
+		}),
+	})
+	run("Success", testCase{
+		args: args{
+			isProd:        true,
+			instanceURL:   testTokenSuccessServer.URL,
+			privateKey:    testRSAPrivateKeyBytes,
+			tokenDuration: 10 * time.Second,
+		},
+		want: &jwtBearer{
+			client:           http.Client{},
+			instanceURL:      testTokenSuccessServer.URL,
+			username:         "my@email.com",
+			rsaPrivateKey:    testRSAPrivateKey,
+			accessTokenMutex: &sync.RWMutex{},
+			authServerURL:    testTokenErrorServer.URL,
+			accessToken:      "aSalesforceAccessToken",
+			errMutex:         &sync.RWMutex{},
+		},
+		errCheck: expect.ErrorNil,
+	})
 }
 
-func TestClient_newAccessToken(t *testing.T) {
+func Test_jwtBearer_newAccessToken(t *testing.T) {
+	type fields struct {
+		client           http.Client
+		instanceURL      string
+		rsaPrivateKey    *rsa.PrivateKey
+		consumerKey      string
+		username         string
+		authServerURL    string
+		accessToken      string
+		accessTokenMutex *sync.RWMutex
+		errMutex         *sync.RWMutex
+	}
+	type testCase struct {
+		name     string
+		fields   fields
+		errCheck expect.ErrorCheck
+	}
+	run := func(name string, testCase testCase) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			t.Helper()
+			c := &jwtBearer{
+				client:           testCase.fields.client,
+				instanceURL:      testCase.fields.instanceURL,
+				rsaPrivateKey:    testCase.fields.rsaPrivateKey,
+				consumerKey:      testCase.fields.consumerKey,
+				username:         testCase.fields.username,
+				authServerURL:    testCase.fields.authServerURL,
+				accessToken:      testCase.fields.accessToken,
+				accessTokenMutex: testCase.fields.accessTokenMutex,
+				errMutex:         testCase.fields.errMutex,
+			}
+			err := c.newAccessToken()
+			testCase.errCheck(t, err)
+		})
+	}
+
 	testServerSuccess := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(http.StatusOK)
 		rw.Write([]byte(`{"access_token":"aSalesforceAccessToken"}`))
 	}))
 	defer testServerSuccess.Close()
 
-	var aux interface{}
-	badJSONErr := json.Unmarshal([]byte("bad JSON '{"), aux)
 	testServerBadJSON := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(http.StatusOK)
 		rw.Write([]byte("bad JSON '{"))
@@ -167,24 +210,8 @@ func TestClient_newAccessToken(t *testing.T) {
 	}))
 	defer testServerErr.Close()
 
-	type fields struct {
-		client           http.Client
-		instanceURL      string
-		rsaPrivateKey    *rsa.PrivateKey
-		consumerKey      string
-		username         string
-		authServerURL    string
-		accessToken      string
-		accessTokenMutex *sync.RWMutex
-		errMutex         *sync.RWMutex
-	}
-	tests := []struct {
-		name    string
-		fields  fields
-		wantErr error
-	}{
-		{
-			name: "SalesforceBadJSONError",
+	{
+		run("SalesforceBadJSONError", testCase{
 			fields: fields{
 				client:           http.Client{},
 				username:         "my@email.com",
@@ -193,22 +220,26 @@ func TestClient_newAccessToken(t *testing.T) {
 				accessTokenMutex: &sync.RWMutex{},
 				errMutex:         &sync.RWMutex{},
 			},
-			wantErr: badJSONErr,
-		},
-		{
-			name: "ErrorSigningJWTWithPrivateKey",
+			errCheck: expect.ErrorAs[*json.SyntaxError](),
+		})
+		run("ErrorSigningJWTWithPrivateKey", testCase{
 			fields: fields{
 				client:           http.Client{},
 				username:         "my@email.com",
 				instanceURL:      testServerSuccess.URL,
 				accessTokenMutex: &sync.RWMutex{},
-				rsaPrivateKey:    &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: big.NewInt(1)}},
-				errMutex:         &sync.RWMutex{},
+				rsaPrivateKey: &rsa.PrivateKey{
+					PublicKey: rsa.PublicKey{
+						N: big.NewInt(3),
+						E: 123456789,
+					},
+					D: big.NewInt(1),
+				},
+				errMutex: &sync.RWMutex{},
 			},
-			wantErr: rsa.ErrMessageTooLong,
-		},
-		{
-			name: "OauthErrorResponse",
+			errCheck: expect.ErrorIs(rsa.ErrMessageTooLong),
+		})
+		run("OauthErrorResponse", testCase{
 			fields: fields{
 				client:           http.Client{},
 				username:         "my@email.com",
@@ -217,13 +248,12 @@ func TestClient_newAccessToken(t *testing.T) {
 				accessTokenMutex: &sync.RWMutex{},
 				errMutex:         &sync.RWMutex{},
 			},
-			wantErr: &OAuthErr{
+			errCheck: expect.ErrorIs(&OAuthErr{
 				Code:        "someSalesforceError",
 				Description: "outOfMana",
-			},
-		},
-		{
-			name: "OauthUnexpectedResponseFormat",
+			}),
+		})
+		run("OauthUnexpectedResponseFormat", testCase{
 			fields: fields{
 				client:           http.Client{},
 				username:         "my@email.com",
@@ -232,10 +262,9 @@ func TestClient_newAccessToken(t *testing.T) {
 				accessTokenMutex: &sync.RWMutex{},
 				errMutex:         &sync.RWMutex{},
 			},
-			wantErr: badJSONErr,
-		},
-		{
-			name: "UnexpectedOauthServerError",
+			errCheck: expect.ErrorAs[*json.SyntaxError](),
+		})
+		run("UnexpectedOauthServerError", testCase{
 			fields: fields{
 				client:           http.Client{},
 				username:         "my@email.com",
@@ -244,13 +273,9 @@ func TestClient_newAccessToken(t *testing.T) {
 				accessTokenMutex: &sync.RWMutex{},
 				errMutex:         &sync.RWMutex{},
 			},
-			wantErr: fmt.Errorf("%s responded with an unexpected HTTP status code: %d",
-				testServerErr.URL+"/services/oauth2/token",
-				http.StatusInternalServerError,
-			),
-		},
-		{
-			name: "Success",
+			errCheck: expect.ErrorNonNil,
+		})
+		run("Success", testCase{
 			fields: fields{
 				client:           http.Client{},
 				username:         "my@email.com",
@@ -259,32 +284,52 @@ func TestClient_newAccessToken(t *testing.T) {
 				accessTokenMutex: &sync.RWMutex{},
 				errMutex:         &sync.RWMutex{},
 			},
-			wantErr: nil,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := &jwtBearer{
-				client:           tt.fields.client,
-				instanceURL:      tt.fields.instanceURL,
-				rsaPrivateKey:    tt.fields.rsaPrivateKey,
-				consumerKey:      tt.fields.consumerKey,
-				username:         tt.fields.username,
-				authServerURL:    tt.fields.authServerURL,
-				accessToken:      tt.fields.accessToken,
-				accessTokenMutex: tt.fields.accessTokenMutex,
-				errMutex:         tt.fields.errMutex,
-				err:              tt.wantErr,
-			}
-			gotErr := c.newAccessToken()
-			if !reflect.DeepEqual(gotErr, tt.wantErr) {
-				t.Errorf("newAccessToken() = %+v, want %+v", gotErr, tt.wantErr)
-			}
+			errCheck: expect.ErrorNil,
 		})
 	}
 }
 
-func TestClient_sendRequest(t *testing.T) {
+func Test_jwtBearer_sendRequest(t *testing.T) {
+	type args struct {
+		ctx         context.Context
+		method      string
+		url         string
+		headers     http.Header
+		requestBody []byte
+	}
+	type expected struct {
+		statusCode int
+		resBody    []byte
+	}
+	type testCase struct {
+		args     args
+		want     expected
+		errCheck expect.ErrorCheck
+	}
+	run := func(name string, testCase testCase) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			t.Helper()
+			c := &jwtBearer{
+				client:           http.Client{},
+				rsaPrivateKey:    testRSAPrivateKey,
+				accessTokenMutex: &sync.RWMutex{},
+			}
+
+			statusCode, resBody, err := c.sendRequest(
+				testCase.args.ctx,
+				testCase.args.method,
+				testCase.args.url,
+				testCase.args.headers,
+				testCase.args.requestBody,
+			)
+
+			expect.Equal(t, statusCode, testCase.want.statusCode)
+			expect.Equal(t, resBody, testCase.want.resBody)
+			testCase.errCheck(t, err)
+		})
+	}
+
 	testServerResBody := []byte(`hello world`)
 	testServerStatusCode := http.StatusOK
 	testServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
@@ -301,13 +346,9 @@ func TestClient_sendRequest(t *testing.T) {
 	}))
 	defer testServerTeapot.Close()
 
-	testServerBadResFmtBody := []byte(`this_is_in_an_un-understandable_format`)
-	testServerBadResFmtStatusCode := http.StatusInternalServerError
-	var aux APIErrs
-	testServerBadResFmtErr := json.Unmarshal(testServerBadResFmtBody, &aux)
 	testServerBadResFmt := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		rw.WriteHeader(testServerBadResFmtStatusCode)
-		rw.Write(testServerBadResFmtBody)
+		rw.WriteHeader(http.StatusInternalServerError)
+		rw.Write([]byte(`this_is_in_an_un-understandable_format`))
 	}))
 	defer testServerBadResFmt.Close()
 
@@ -328,138 +369,154 @@ func TestClient_sendRequest(t *testing.T) {
 	}))
 	defer testServerErr.Close()
 
+	run("NewRequestWithNilBody/Error", testCase{
+		args: args{
+			ctx: context.Background(),
+		},
+		want: expected{
+			statusCode: -1,
+		},
+		errCheck: expect.ErrorNonNil,
+	})
+	run("NewRequestWithBody/Error", testCase{
+		args: args{
+			ctx:         context.Background(),
+			requestBody: []byte("test"),
+		},
+		want: expected{
+			statusCode: -1,
+		},
+		errCheck: expect.ErrorNonNil,
+	})
+	run("UnexpectedStatusCode", testCase{
+		args: args{
+			ctx:     context.Background(),
+			method:  http.MethodGet,
+			url:     testServerTeapot.URL,
+			headers: http.Header{"headerName": []string{"value1", "value2"}},
+		},
+		want: expected{
+			statusCode: testServerTeapotStatusCode,
+			resBody:    testServerTeapotResBody,
+		},
+		errCheck: expect.ErrorNonNil,
+	})
+	run("NilBodySuccess", testCase{
+		args: args{
+			ctx:     context.Background(),
+			method:  http.MethodGet,
+			url:     testServer.URL,
+			headers: http.Header{"headerName": []string{"value1", "value2"}},
+		},
+		want: expected{
+			statusCode: testServerStatusCode,
+			resBody:    testServerResBody,
+		},
+		errCheck: expect.ErrorNil,
+	})
+	run("ErroneousStatusCode/UnexpectedResponseFormat", testCase{
+		args: args{
+			ctx:    context.Background(),
+			method: http.MethodGet,
+			url:    testServerBadResFmt.URL,
+		},
+		want: expected{
+			statusCode: http.StatusInternalServerError,
+		},
+		errCheck: expect.ErrorAs[*json.SyntaxError](),
+	})
+	run("ErroneousStatusCode", testCase{
+		args: args{
+			ctx:    context.Background(),
+			method: http.MethodGet,
+			url:    testServerErr.URL,
+		},
+		want: expected{
+			statusCode: testServerErrStatusCode,
+			resBody:    testServerErrBody,
+		},
+		errCheck: expect.ErrorIs(&APIErrs{
+			APIErr{
+				Message: "Session expired or invalid",
+				ErrCode: "INVALID_SESSION_ID",
+			},
+		}),
+	})
+	run("Success", testCase{
+		args: args{
+			ctx:     context.Background(),
+			method:  http.MethodGet,
+			url:     testServer.URL,
+			headers: http.Header{"headerName": []string{"value1", "value2"}},
+		},
+		want: expected{
+			statusCode: testServerStatusCode,
+			resBody:    testServerResBody,
+		},
+		errCheck: expect.ErrorNil,
+	})
+}
+
+func Test_jwtBearer_SendRequest(t *testing.T) {
 	type args struct {
-		ctx         context.Context
 		method      string
-		url         string
+		relURL      string
 		headers     http.Header
 		requestBody []byte
+	}
+	type fields struct {
+		instanceURL   string
+		consumerKey   string
+		username      string
+		authServerURL string
+		accessToken   string
+		err           error
 	}
 	type expected struct {
 		statusCode int
 		resBody    []byte
-		err        error
 	}
-	tests := []struct {
-		name string
-		args args
-		want expected
-	}{
-		{
-			name: "NewRequestWithNilBody/Error",
-			args: args{
-				ctx: nil,
-			},
-			want: expected{
-				statusCode: -1,
-				err:        errors.New("net/http: nil Context"),
-			},
-		},
-		{
-			name: "NewRequestWithBody/Error",
-			args: args{
-				ctx:         nil,
-				requestBody: []byte("test"),
-			},
-			want: expected{
-				statusCode: -1,
-				err:        errors.New("net/http: nil Context"),
-			},
-		},
-		{
-			name: "UnexpectedStatusCode",
-			args: args{
-				ctx:     context.Background(),
-				method:  http.MethodGet,
-				url:     testServerTeapot.URL,
-				headers: http.Header{"headerName": []string{"value1", "value2"}},
-			},
-			want: expected{
-				statusCode: testServerTeapotStatusCode,
-				resBody:    testServerTeapotResBody,
-				err:        fmt.Errorf("unexpected HTTP status code: %d", http.StatusTeapot),
-			},
-		},
-		{
-			name: "NilBodySuccess",
-			args: args{
-				ctx:     context.Background(),
-				method:  http.MethodGet,
-				url:     testServer.URL,
-				headers: http.Header{"headerName": []string{"value1", "value2"}},
-			},
-			want: expected{
-				statusCode: testServerStatusCode,
-				resBody:    testServerResBody,
-			},
-		},
-		{
-			name: "ErroneousStatusCode/UnexpectedResponseFormat",
-			args: args{
-				ctx:    context.Background(),
-				method: http.MethodGet,
-				url:    testServerBadResFmt.URL,
-			},
-			want: expected{
-				statusCode: testServerBadResFmtStatusCode,
-				err:        testServerBadResFmtErr,
-			},
-		},
-		{
-			name: "ErroneousStatusCode",
-			args: args{
-				ctx:    context.Background(),
-				method: http.MethodGet,
-				url:    testServerErr.URL,
-			},
-			want: expected{
-				statusCode: testServerErrStatusCode,
-				resBody:    testServerErrBody,
-				err:        &testServerErrSfErr,
-			},
-		},
-		{
-			name: "Success",
-			args: args{
-				ctx:     context.Background(),
-				method:  http.MethodGet,
-				url:     testServer.URL,
-				headers: http.Header{"headerName": []string{"value1", "value2"}},
-			},
-			want: expected{
-				statusCode: testServerStatusCode,
-				resBody:    testServerResBody,
-			},
-		},
+	type testCase struct {
+		args     args
+		fields   fields
+		want     expected
+		errCheck expect.ErrorCheck
 	}
-	for _, tt := range tests {
-		c := &jwtBearer{
-			client:           http.Client{},
-			rsaPrivateKey:    testRSAPrivateKey,
-			accessTokenMutex: &sync.RWMutex{},
-		}
 
-		t.Run(tt.name, func(t *testing.T) {
-			statusCode, resBody, err := c.sendRequest(tt.args.ctx, tt.args.method, tt.args.url, tt.args.headers, tt.args.requestBody)
-			switch {
-			case !reflect.DeepEqual(statusCode, tt.want.statusCode):
-				t.Errorf("newAccessToken() statusCode = %+v, want %+v", statusCode, tt.want.statusCode)
-			case !reflect.DeepEqual(resBody, tt.want.resBody):
-				t.Errorf("newAccessToken() responseBody = %+v, want %+v", resBody, tt.want.resBody)
-			case !reflect.DeepEqual(err, tt.want.err):
-				t.Errorf("newAccessToken() err = %+v, want %+v", err, tt.want.err)
+	run := func(name string, testCase testCase) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			t.Helper()
+			c := &jwtBearer{
+				client:           http.Client{},
+				instanceURL:      testCase.fields.instanceURL,
+				rsaPrivateKey:    testRSAPrivateKey,
+				consumerKey:      testCase.fields.consumerKey,
+				username:         testCase.fields.username,
+				authServerURL:    testCase.fields.authServerURL,
+				accessToken:      testCase.fields.accessToken,
+				accessTokenMutex: &sync.RWMutex{},
+				errMutex:         &sync.RWMutex{},
+				err:              testCase.fields.err,
 			}
+			statusCode, resBody, err := c.SendRequest(
+				context.Background(),
+				testCase.args.method,
+				testCase.args.relURL,
+				testCase.args.headers,
+				testCase.args.requestBody,
+			)
+
+			expect.Equal(t, statusCode, testCase.want.statusCode)
+			expect.Equal(t, resBody, testCase.want.resBody)
+			testCase.errCheck(t, err)
 		})
 	}
-}
 
-func TestClient_SendRequest(t *testing.T) {
 	testAccessToken := "token_williams"
 
 	testServerBadResFmtStatusCode := http.StatusInternalServerError
 	testServerBadResFmtBody := []byte(`this_is_in_an_un-understandable_format`)
-	var aux APIErrs
-	testServerBadResFmtErr := json.Unmarshal(testServerBadResFmtBody, &aux)
 	testServerBadResFmt := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(testServerBadResFmtStatusCode)
 		rw.Write(testServerBadResFmtBody)
@@ -497,7 +554,6 @@ func TestClient_SendRequest(t *testing.T) {
 		}
 		rw.WriteHeader(testServerGetNewTokenStatusCode)
 		rw.Write(testServerGetNewTokenBody2)
-
 	}))
 	defer testServerGetNewToken.Close()
 
@@ -551,145 +607,88 @@ func TestClient_SendRequest(t *testing.T) {
 	}))
 	defer testServerUnauthorizedNewTokenSuccess.Close()
 
-	type args struct {
-		ctx         context.Context
-		method      string
-		relURL      string
-		headers     http.Header
-		requestBody []byte
-	}
-	type fields struct {
-		instanceURL   string
-		consumerKey   string
-		username      string
-		authServerURL string
-		accessToken   string
-		err           error
-	}
-	type expected struct {
-		statusCode int
-		resBody    []byte
-		err        error
-	}
-	tests := []struct {
-		name   string
-		args   args
-		fields fields
-		want   expected
-	}{
-		{
-			name: "jwtBearerWithError/NewTokenError",
-			fields: fields{
-				instanceURL: testServerNewTokenErr.URL,
-				err:         errors.New("something bad happened"),
-			},
-			want: expected{
-				statusCode: -1,
-				err:        &testServerNewTokenErrErr,
-			},
+	run("jwtBearerWithError/NewTokenError", testCase{
+		fields: fields{
+			instanceURL: testServerNewTokenErr.URL,
+			err:         errors.New("something bad happened"),
 		},
-		{
-			name: "jwtBearerWithError/NewTokenSuccess",
-			fields: fields{
-				instanceURL: testServerUnauthorizedNewTokenSuccess.URL,
-				err:         errors.New("something bad happened"),
-			},
-			want: expected{
-				statusCode: testServerUnauthorizedNewTokenSuccessStatusCode,
-				resBody:    testServerUnauthorizedNewTokenSuccessBody,
-			},
+		want: expected{
+			statusCode: -1,
 		},
-		{
-			name: "sendRequest/Error",
-			fields: fields{
-				instanceURL: testServerBadResFmt.URL,
-			},
-			want: expected{
-				statusCode: testServerBadResFmtStatusCode,
-				err:        testServerBadResFmtErr,
-			},
+		errCheck: expect.ErrorIs(&testServerNewTokenErrErr),
+	})
+	run("jwtBearerWithError/NewTokenSuccess", testCase{
+		fields: fields{
+			instanceURL: testServerUnauthorizedNewTokenSuccess.URL,
+			err:         errors.New("something bad happened"),
 		},
-		{
-			name: "ExpiredToken/NewTokenError",
-			fields: fields{
-				instanceURL: testServerNewTokenErr.URL,
-			},
-			args: args{
-				method: http.MethodGet,
-				relURL: "/something",
-			},
-			want: expected{
-				statusCode: -1,
-				err:        &testServerNewTokenErrErr,
-			},
+		want: expected{
+			statusCode: testServerUnauthorizedNewTokenSuccessStatusCode,
+			resBody:    testServerUnauthorizedNewTokenSuccessBody,
 		},
-		{
-			name: "Unauthorized/NewTokenSuccess/Request/Error",
-			fields: fields{
-				instanceURL: testServerGetNewToken.URL,
-			},
-			args: args{
-				method: http.MethodGet,
-				relURL: "/something",
-			},
-			want: expected{
-				statusCode: testServerGetNewTokenStatusCode,
-				resBody:    testServerGetNewTokenBody2,
-				err:        &testServerGetNewTokenErr,
-			},
+		errCheck: expect.ErrorNil,
+	})
+	run("sendRequest/Error", testCase{
+		fields: fields{
+			instanceURL: testServerBadResFmt.URL,
 		},
-		{
-			name: "Unauthorized/NewTokenError",
-			fields: fields{
-				instanceURL: testServerNewTokenErr.URL,
-			},
-			args: args{
-				method: http.MethodGet,
-				relURL: "/something",
-			},
-			want: expected{
-				statusCode: -1,
-				err:        &testServerNewTokenErrErr,
-			},
+		want: expected{
+			statusCode: testServerBadResFmtStatusCode,
 		},
-		{
-			name: "Unauthorized/NewToken/Success",
-			fields: fields{
-				instanceURL: testServerUnauthorizedNewTokenSuccess.URL,
-			},
-			args: args{
-				method: http.MethodGet,
-				relURL: "/something",
-			},
-			want: expected{
-				statusCode: testServerUnauthorizedNewTokenSuccessStatusCode,
-				resBody:    testServerUnauthorizedNewTokenSuccessBody,
-			},
+		errCheck: expect.ErrorAs[*json.SyntaxError](),
+	})
+	run("ExpiredToken/NewTokenError", testCase{
+		fields: fields{
+			instanceURL: testServerNewTokenErr.URL,
 		},
-	}
-	for _, tt := range tests {
-		c := &jwtBearer{
-			client:           http.Client{},
-			instanceURL:      tt.fields.instanceURL,
-			rsaPrivateKey:    testRSAPrivateKey,
-			consumerKey:      tt.fields.consumerKey,
-			username:         tt.fields.username,
-			authServerURL:    tt.fields.authServerURL,
-			accessToken:      tt.fields.accessToken,
-			accessTokenMutex: &sync.RWMutex{},
-			errMutex:         &sync.RWMutex{},
-			err:              tt.fields.err,
-		}
-		t.Run(tt.name, func(t *testing.T) {
-			statusCode, resBody, err := c.SendRequest(context.Background(), tt.args.method, tt.args.relURL, tt.args.headers, tt.args.requestBody)
-			switch {
-			case !reflect.DeepEqual(statusCode, tt.want.statusCode):
-				t.Errorf("SendRequest() statusCode = %+v, want %+v", statusCode, tt.want.statusCode)
-			case !reflect.DeepEqual(resBody, tt.want.resBody):
-				t.Errorf("SendRequest() responseBody = %+v, want %+v", resBody, tt.want.resBody)
-			case !reflect.DeepEqual(err, tt.want.err):
-				t.Errorf("SendRequest() err = %+v, want %+v", err, tt.want.err)
-			}
-		})
-	}
+		args: args{
+			method: http.MethodGet,
+			relURL: "/something",
+		},
+		want: expected{
+			statusCode: -1,
+		},
+		errCheck: expect.ErrorIs(&testServerNewTokenErrErr),
+	})
+	run("Unauthorized/NewTokenSuccess/Request/Error", testCase{
+		fields: fields{
+			instanceURL: testServerGetNewToken.URL,
+		},
+		args: args{
+			method: http.MethodGet,
+			relURL: "/something",
+		},
+		want: expected{
+			statusCode: testServerGetNewTokenStatusCode,
+			resBody:    testServerGetNewTokenBody2,
+		},
+		errCheck: expect.ErrorIs(&testServerGetNewTokenErr),
+	})
+	run("Unauthorized/NewTokenError", testCase{
+		fields: fields{
+			instanceURL: testServerNewTokenErr.URL,
+		},
+		args: args{
+			method: http.MethodGet,
+			relURL: "/something",
+		},
+		want: expected{
+			statusCode: -1,
+		},
+		errCheck: expect.ErrorIs(&testServerNewTokenErrErr),
+	})
+	run("Unauthorized/NewToken/Success", testCase{
+		fields: fields{
+			instanceURL: testServerUnauthorizedNewTokenSuccess.URL,
+		},
+		args: args{
+			method: http.MethodGet,
+			relURL: "/something",
+		},
+		want: expected{
+			statusCode: testServerUnauthorizedNewTokenSuccessStatusCode,
+			resBody:    testServerUnauthorizedNewTokenSuccessBody,
+		},
+		errCheck: expect.ErrorNil,
+	})
 }

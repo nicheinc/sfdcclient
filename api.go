@@ -30,6 +30,11 @@ func (e *OAuthErr) Error() string {
 	return fmt.Sprintf("OAuth authorization error code: %s, description: %s", e.Code, e.Description)
 }
 
+func (e *OAuthErr) Is(err error) bool {
+	o, ok := err.(*OAuthErr)
+	return ok && e.Code == o.Code && e.Description == o.Description
+}
+
 /**********************************************/
 /*  Salesforce REST API error response types  */
 /**********************************************/
@@ -55,6 +60,11 @@ func (e *APIErrs) Error() string {
 		}
 	}
 	return strings.Join(str, "|")
+}
+
+func (e *APIErrs) Is(err error) bool {
+	o, ok := err.(*APIErrs)
+	return ok && e.Error() == o.Error()
 }
 
 type APIErr struct {
