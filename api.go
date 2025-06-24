@@ -64,8 +64,7 @@ func (e *APIErrs) Error() string {
 }
 
 func (e *APIErrs) Is(err error) bool {
-	o, ok := err.(*APIErrs)
-	return ok && e.Error() == o.Error()
+	return cmp.Equal(e, err)
 }
 
 type APIErr struct {
