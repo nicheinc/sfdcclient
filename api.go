@@ -43,13 +43,13 @@ func (e *OAuthErr) Is(err error) bool {
 // Example:
 // [
 //
-//	    {
-//				"statusCode": "MALFORMED_ID",
-//				"message": "SomeSaleforceObject ID: id value of incorrect type: 1234",
-//				"fields": [
-//					"Id"
-//				]
-//	    }
+//	{
+//		"statusCode": "MALFORMED_ID",
+//		"message": "SomeSaleforceObject ID: id value of incorrect type: 1234",
+//		"fields": [
+//			"Id"
+//		]
+//	}
 //
 // ]
 type APIErrs []APIErr
