@@ -32,7 +32,7 @@ func (e *OAuthErr) Error() string {
 
 func (e *OAuthErr) Is(err error) bool {
 	o, ok := err.(*OAuthErr)
-	return ok && e.Code == o.Code && e.Description == o.Description
+	return ok && *e == *o
 }
 
 /**********************************************/
