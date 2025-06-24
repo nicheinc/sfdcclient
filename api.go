@@ -3,6 +3,8 @@ package sfdcclient
 import (
 	"fmt"
 	"strings"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 /*****************************************/
@@ -30,21 +32,27 @@ func (e *OAuthErr) Error() string {
 	return fmt.Sprintf("OAuth authorization error code: %s, description: %s", e.Code, e.Description)
 }
 
+func (e *OAuthErr) Is(err error) bool {
+	o, ok := err.(*OAuthErr)
+	return ok && *e == *o
+}
+
 /**********************************************/
 /*  Salesforce REST API error response types  */
 /**********************************************/
 
 // APIErrs represents an error response from salesforce REST API endpoints
 // Example:
-// [
-//     {
-// 			"statusCode": "MALFORMED_ID",
-// 			"message": "SomeSaleforceObject ID: id value of incorrect type: 1234",
-// 			"fields": [
-// 				"Id"
-// 			]
-//     }
-// ]
+//
+//	[
+//		{
+//			"statusCode": "MALFORMED_ID",
+//			"message": "SomeSaleforceObject ID: id value of incorrect type: 1234",
+//			"fields": [
+//				"Id"
+//			]
+//		}
+//	]
 type APIErrs []APIErr
 
 func (e *APIErrs) Error() string {
@@ -55,6 +63,10 @@ func (e *APIErrs) Error() string {
 		}
 	}
 	return strings.Join(str, "|")
+}
+
+func (e *APIErrs) Is(err error) bool {
+	return cmp.Equal(e, err)
 }
 
 type APIErr struct {
