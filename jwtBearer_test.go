@@ -67,6 +67,7 @@ func Test_NewClientWithJWTBearer(t *testing.T) {
 	run := func(name string, testCase testCase) {
 		t.Helper()
 		t.Run(name, func(t *testing.T) {
+			t.Helper()
 			_, err := NewClientWithJWTBearer(
 				testCase.args.isProd,
 				testCase.args.instanceURL,
