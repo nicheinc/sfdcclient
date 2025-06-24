@@ -41,17 +41,16 @@ func (e *OAuthErr) Is(err error) bool {
 
 // APIErrs represents an error response from salesforce REST API endpoints
 // Example:
-// [
 //
-//	{
-//		"statusCode": "MALFORMED_ID",
-//		"message": "SomeSaleforceObject ID: id value of incorrect type: 1234",
-//		"fields": [
-//			"Id"
-//		]
-//	}
-//
-// ]
+//	[
+//		{
+//			"statusCode": "MALFORMED_ID",
+//			"message": "SomeSaleforceObject ID: id value of incorrect type: 1234",
+//			"fields": [
+//				"Id"
+//			]
+//		}
+//	]
 type APIErrs []APIErr
 
 func (e *APIErrs) Error() string {
