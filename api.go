@@ -3,6 +3,8 @@ package sfdcclient
 import (
 	"fmt"
 	"strings"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 /*****************************************/
