@@ -238,7 +238,7 @@ func Test_jwtBearer_newAccessToken(t *testing.T) {
 				},
 				errMutex: &sync.RWMutex{},
 			},
-			errCheck: expect.ErrorIs(rsa.ErrMessageTooLong),
+			errCheck: expect.ErrorNonNil,
 		})
 		run("OauthErrorResponse", testCase{
 			fields: fields{

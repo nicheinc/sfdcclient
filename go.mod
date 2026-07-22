@@ -1,9 +1,9 @@
 module github.com/nicheinc/sfdcclient/v2
 
-go 1.18
+go 1.26.5
 
 require (
-	github.com/golang-jwt/jwt/v5 v5.2.1
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-cmp v0.5.9
 	github.com/nicheinc/expect v0.2.0
 	github.com/peterbourgon/ff/v3 v3.4.0
