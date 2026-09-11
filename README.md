@@ -10,17 +10,10 @@ for making requests to salesforce's REST API through a connected app.
 
 Two server-to-server authorization flows are supported, one constructor each:
 
-| Constructor | Flow |
-|---|---|
-| `NewClientWithJWTBearer` | [OAuth 2.0 JWT Bearer](https://help.salesforce.com/articleView?id=remoteaccess_oauth_jwt_flow.htm&type=5) |
+| Constructor                      | Flow                                                                                                                                      |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `NewClientWithJWTBearer`         | [OAuth 2.0 JWT Bearer](https://help.salesforce.com/articleView?id=remoteaccess_oauth_jwt_flow.htm&type=5)                                 |
 | `NewClientWithClientCredentials` | [OAuth 2.0 Client Credentials](https://help.salesforce.com/s/articleView?id=xcloud.remoteaccess_oauth_client_credentials_flow.htm&type=5) |
-
-Both return a client exposing the same `SendRequest` method, so consumers can
-declare a single one-method interface and pick a flow at construction time.
-
-Neither flow expires its cached token on a timer, since salesforce does not
-reliably report `expires_in`: a token is held until a request is rejected with a
-401, at which point it is renewed and the request retried once.
 
 ## Installation
 

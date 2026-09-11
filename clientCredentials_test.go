@@ -1,6 +1,7 @@
 package sfdcclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -96,16 +97,24 @@ func Test_NewClientWithClientCredentials(t *testing.T) {
 	})
 }
 
-// The token request is form encoded and carries the connected app's
-// credentials under the client_credentials grant.
+// The token request is form encoded under the client_credentials grant, and
+// carries the connected app's credentials as basic authentication rather than
+// as body parameters.
 func Test_NewClientWithClientCredentials_TokenRequest(t *testing.T) {
 	var (
-		mutex                              sync.Mutex
-		gotMethod, gotPath, gotContentType string
-		gotForm                            url.Values
+		mutex                                    sync.Mutex
+		gotMethod, gotPath, gotContentType       string
+		gotClientID, gotClientSecret, gotRawBody string
+		gotBasicAuth                             bool
+		gotForm                                  url.Values
 	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rawBody, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Errorf("Error reading request body: %v", err)
+		}
+		req.Body = io.NopCloser(bytes.NewReader(rawBody))
 		if err := req.ParseForm(); err != nil {
 			t.Errorf("Error parsing form: %v", err)
 		}
@@ -114,6 +123,8 @@ func Test_NewClientWithClientCredentials_TokenRequest(t *testing.T) {
 		gotMethod = req.Method
 		gotPath = req.URL.Path
 		gotContentType = req.Header.Get("Content-Type")
+		gotClientID, gotClientSecret, gotBasicAuth = req.BasicAuth()
+		gotRawBody = string(rawBody)
 		gotForm = req.PostForm
 		mutex.Unlock()
 
@@ -138,8 +149,45 @@ func Test_NewClientWithClientCredentials_TokenRequest(t *testing.T) {
 	expect.Equal(t, gotPath, oauthTokenPath)
 	expect.Equal(t, gotContentType, "application/x-www-form-urlencoded")
 	expect.Equal(t, gotForm.Get("grant_type"), grantTypeClientCredentials)
-	expect.Equal(t, gotForm.Get("client_id"), testClientID)
-	expect.Equal(t, gotForm.Get("client_secret"), testClientSecret)
+
+	expect.Equal(t, gotBasicAuth, true)
+	expect.Equal(t, gotClientID, testClientID)
+	expect.Equal(t, gotClientSecret, testClientSecret)
+
+	// The credentials belong in the header alone: leaving a copy in the body
+	// would forfeit the protection the header buys.
+	expect.Equal(t, strings.Contains(gotRawBody, testClientSecret), false)
+	expect.Equal(t, strings.Contains(gotRawBody, testClientID), false)
+}
+
+// A token request must not follow a redirect: replaying it would send the
+// client secret to a host the login URL named rather than the one the caller
+// addressed.
+func Test_NewClientWithClientCredentials_TokenRequestDoesNotRedirect(t *testing.T) {
+	var redirectTargetHits atomic.Int32
+
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		redirectTargetHits.Add(1)
+
+		rw.WriteHeader(http.StatusOK)
+		rw.Write([]byte(tokenResponse("aSalesforceAccessToken", "https://example.my.salesforce.com")))
+	}))
+	defer redirectTarget.Close()
+
+	loginServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		http.Redirect(rw, req, redirectTarget.URL+oauthTokenPath, http.StatusTemporaryRedirect)
+	}))
+	defer loginServer.Close()
+
+	_, err := NewClientWithClientCredentials(
+		context.Background(),
+		loginServer.URL,
+		testClientID,
+		testClientSecret,
+		*http.DefaultClient,
+	)
+	expect.ErrorNonNil(t, err)
+	expect.Equal(t, redirectTargetHits.Load(), 0)
 }
 
 // API requests must go to the instance URL salesforce reported, not to the

@@ -49,9 +49,10 @@ type clientCredentials struct {
 // see https://help.salesforce.com/s/articleView?id=xcloud.remoteaccess_oauth_client_credentials_flow.htm
 //
 // loginURL is a complete base URL, scheme included, and should be https: the
-// token request carries the client secret in its body. The credentials belong
-// to the connected app rather than to a user, so a packaged app's client ID and
-// secret may be shared across organizations while loginURL varies.
+// token request carries the client secret in an Authorization header. The
+// credentials belong to the connected app rather than to a user, so a packaged
+// app's client ID and secret may be shared across organizations while loginURL
+// varies.
 //
 // Constructing the client performs the token exchange, so a returned error
 // means authorization failed. ctx bounds that exchange; refreshes made later
@@ -88,14 +89,18 @@ func (c *clientCredentials) newAccessToken(ctx context.Context) error {
 		c.setErr(err)
 	}()
 
+	// The credentials are sent as basic authentication rather than as body
+	// parameters, leaving only the grant type in the body.
 	form := url.Values{
-		"grant_type":    {grantTypeClientCredentials},
-		"client_id":     {c.clientID},
-		"client_secret": {c.clientSecret},
+		"grant_type": {grantTypeClientCredentials},
+	}
+	credentials := basicAuth{
+		clientID:     c.clientID,
+		clientSecret: c.clientSecret,
 	}
 
 	var tokenRes AccessTokenResponse
-	if tokenRes, err = requestToken(ctx, c.client, c.loginURL+oauthTokenPath, form.Encode()); err != nil {
+	if tokenRes, err = requestToken(ctx, c.client, c.loginURL+oauthTokenPath, form.Encode(), &credentials); err != nil {
 		return err
 	}
 

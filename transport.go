@@ -19,17 +19,41 @@ const (
 	grantTypeClientCredentials = "client_credentials"
 )
 
+// basicAuth carries the client credentials of an authorization flow that
+// authenticates with them directly, to be sent in an Authorization header.
+type basicAuth struct {
+	clientID     string
+	clientSecret string
+}
+
 // requestToken performs an OAuth token request and returns the granted token.
 //
 // body is the already-encoded form body, since each authorization flow sends a
 // different grant type and set of credentials. A failed request is returned as
 // an *OAuthErr when Salesforce describes it as one.
-func requestToken(ctx context.Context, client http.Client, tokenURL, body string) (AccessTokenResponse, error) {
+//
+// credentials, when non-nil, are sent as HTTP basic authentication rather than
+// as body parameters. the header keeps the secret in a field the standard
+// library treats as sensitive, stripping it if the token endpoint redirects to
+// another domain.
+func requestToken(ctx context.Context, client http.Client, tokenURL, body string, credentials *basicAuth) (AccessTokenResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(body))
 	if err != nil {
 		return AccessTokenResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if credentials != nil {
+		req.SetBasicAuth(credentials.clientID, credentials.clientSecret)
+	}
+
+	// The token endpoint has no legitimate reason to redirect, and following
+	// one would replay the request - credentials included - against a host the
+	// organization's My Domain named rather than the one it was addressed to.
+	// http.Client is a value here, so refusing redirects leaves the caller's
+	// client, and the REST API requests made with it, untouched.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 
 	res, err := client.Do(req)
 	if err != nil {

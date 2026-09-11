@@ -89,7 +89,7 @@ func (c *jwtBearer) newAccessToken(ctx context.Context) error {
 	body := fmt.Sprintf("grant_type=%s&assertion=%s", grantTypeJWTBearer, signedJWT)
 
 	var tokenRes AccessTokenResponse
-	if tokenRes, err = requestToken(ctx, c.client, c.instanceURL+oauthTokenPath, body); err != nil {
+	if tokenRes, err = requestToken(ctx, c.client, c.instanceURL+oauthTokenPath, body, nil); err != nil {
 		return err
 	}
 
