@@ -28,7 +28,164 @@ func tokenResponse(accessToken, instanceURL string) string {
 	return fmt.Sprintf(`{"access_token":%q,"instance_url":%q}`, accessToken, instanceURL)
 }
 
+// roundTripFunc stands in for the transport of the http.Client the constructor
+// is handed, so the constructor can be exercised against a real
+// my.salesforce.com login URL - which validation requires, and no test server
+// can have - without a live host.
+type roundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+// newTestClient returns a client authorized against loginURL, bypassing the
+// login URL validation the constructor performs, since a test server is not
+// served from a my.salesforce.com host. Validation itself is covered by
+// Test_NewClientWithClientCredentials.
+func newTestClient(t *testing.T, ctx context.Context, loginURL string) (*clientCredentials, error) {
+	t.Helper()
+
+	client := newClientCredentials(loginURL, testClientID, testClientSecret, *http.DefaultClient)
+
+	return client, client.NewAccessToken(ctx)
+}
+
+// The constructor decides where the client secret is sent, so it validates
+// loginURL before sending anything. The token exchange it performs afterwards
+// is covered by Test_clientCredentials_NewAccessToken.
 func Test_NewClientWithClientCredentials(t *testing.T) {
+	type expected struct {
+		nilClient     bool
+		tokenRequests int
+	}
+	type testCase struct {
+		loginURL string
+		want     expected
+		errCheck expect.ErrorCheck
+	}
+	run := func(name string, testCase testCase) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			t.Helper()
+
+			var tokenRequests atomic.Int32
+
+			httpClient := http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					tokenRequests.Add(1)
+
+					expect.Equal(t, req.URL.Path, oauthTokenPath)
+
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{},
+						Body: io.NopCloser(strings.NewReader(
+							tokenResponse("aSalesforceAccessToken", "https://example.my.salesforce.com"),
+						)),
+					}, nil
+				}),
+			}
+
+			client, err := NewClientWithClientCredentials(
+				context.Background(),
+				testCase.loginURL,
+				testClientID,
+				testClientSecret,
+				httpClient,
+			)
+			testCase.errCheck(t, err)
+			expect.Equal(t, client == nil, testCase.want.nilClient)
+			expect.Equal(t, int(tokenRequests.Load()), testCase.want.tokenRequests)
+		})
+	}
+
+	run("Success", testCase{
+		loginURL: "https://example.my.salesforce.com",
+		want:     expected{tokenRequests: 1},
+		errCheck: expect.ErrorNil,
+	})
+	// Sandboxes and scratch orgs are served from their own subdomains, so the
+	// suffix must admit more than one label in front of it.
+	run("Success/Sandbox", testCase{
+		loginURL: "https://example--dev.sandbox.my.salesforce.com",
+		want:     expected{tokenRequests: 1},
+		errCheck: expect.ErrorNil,
+	})
+	run("Success/ScratchOrg", testCase{
+		loginURL: "https://example.scratch.my.salesforce.com",
+		want:     expected{tokenRequests: 1},
+		errCheck: expect.ErrorNil,
+	})
+	// Host names are case insensitive, so a mixed-case one is the same host.
+	run("Success/MixedCaseHost", testCase{
+		loginURL: "https://Example.My.Salesforce.com",
+		want:     expected{tokenRequests: 1},
+		errCheck: expect.ErrorNil,
+	})
+	run("Success/HostWithPort", testCase{
+		loginURL: "https://example.my.salesforce.com:8443",
+		want:     expected{tokenRequests: 1},
+		errCheck: expect.ErrorNil,
+	})
+
+	// Every rejection must happen before the secret is sent anywhere, so each
+	// case below expects no token request at all.
+	run("Error/PlaintextHTTP", testCase{
+		loginURL: "http://example.my.salesforce.com",
+		want:     expected{nilClient: true},
+		errCheck: expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	run("Error/NoScheme", testCase{
+		loginURL: "example.my.salesforce.com",
+		want:     expected{nilClient: true},
+		errCheck: expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	run("Error/Empty", testCase{
+		loginURL: "",
+		want:     expected{nilClient: true},
+		errCheck: expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	run("Error/UnrelatedHost", testCase{
+		loginURL: "https://attacker.example",
+		want:     expected{nilClient: true},
+		errCheck: expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	// The suffix appears in the host but the host does not end with it.
+	run("Error/SuffixConfusion", testCase{
+		loginURL: "https://example.my.salesforce.com.attacker.example",
+		want:     expected{nilClient: true},
+		errCheck: expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	// The suffix is not preceded by a label boundary.
+	run("Error/SuffixWithoutLabelBoundary", testCase{
+		loginURL: "https://attackermy.salesforce.com",
+		want:     expected{nilClient: true},
+		errCheck: expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	// Everything before the @ is userinfo: the host is attacker.example.
+	run("Error/UserinfoComponent", testCase{
+		loginURL: "https://example.my.salesforce.com@attacker.example",
+		want:     expected{nilClient: true},
+		errCheck: expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	// A port does not make an unrelated host salesforce's.
+	run("Error/UnrelatedHostWithPort", testCase{
+		loginURL: "https://attacker.example:443",
+		want:     expected{nilClient: true},
+		errCheck: expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	// No organization is served from the apex, and admitting it would mean
+	// matching the suffix without a label boundary.
+	run("Error/ApexDomain", testCase{
+		loginURL: "https://my.salesforce.com",
+		want:     expected{nilClient: true},
+		errCheck: expect.ErrorIs(ErrInvalidLoginURL),
+	})
+}
+
+// How the token response is interpreted, exercised against a test server and
+// so independent of the login URL validation the constructor performs.
+func Test_clientCredentials_NewAccessToken(t *testing.T) {
 	type testCase struct {
 		statusCode int
 		body       string
@@ -45,13 +202,7 @@ func Test_NewClientWithClientCredentials(t *testing.T) {
 			}))
 			defer server.Close()
 
-			_, err := NewClientWithClientCredentials(
-				context.Background(),
-				server.URL,
-				testClientID,
-				testClientSecret,
-				*http.DefaultClient,
-			)
+			_, err := newTestClient(t, context.Background(), server.URL)
 			testCase.errCheck(t, err)
 		})
 	}
@@ -100,7 +251,7 @@ func Test_NewClientWithClientCredentials(t *testing.T) {
 // The token request is form encoded under the client_credentials grant, and
 // carries the connected app's credentials as basic authentication rather than
 // as body parameters.
-func Test_NewClientWithClientCredentials_TokenRequest(t *testing.T) {
+func Test_clientCredentials_NewAccessToken_TokenRequest(t *testing.T) {
 	var (
 		mutex                                    sync.Mutex
 		gotMethod, gotPath, gotContentType       string
@@ -133,13 +284,7 @@ func Test_NewClientWithClientCredentials_TokenRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := NewClientWithClientCredentials(
-		context.Background(),
-		server.URL,
-		testClientID,
-		testClientSecret,
-		*http.DefaultClient,
-	)
+	_, err := newTestClient(t, context.Background(), server.URL)
 	expect.ErrorNil(t, err)
 
 	mutex.Lock()
@@ -163,7 +308,7 @@ func Test_NewClientWithClientCredentials_TokenRequest(t *testing.T) {
 // A token request must not follow a redirect: replaying it would send the
 // client secret to a host the login URL named rather than the one the caller
 // addressed.
-func Test_NewClientWithClientCredentials_TokenRequestDoesNotRedirect(t *testing.T) {
+func Test_clientCredentials_NewAccessToken_DoesNotFollowRedirects(t *testing.T) {
 	var redirectTargetHits atomic.Int32
 
 	redirectTarget := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
@@ -179,13 +324,7 @@ func Test_NewClientWithClientCredentials_TokenRequestDoesNotRedirect(t *testing.
 	}))
 	defer loginServer.Close()
 
-	_, err := NewClientWithClientCredentials(
-		context.Background(),
-		loginServer.URL,
-		testClientID,
-		testClientSecret,
-		*http.DefaultClient,
-	)
+	_, err := newTestClient(t, context.Background(), loginServer.URL)
 	expect.ErrorNonNil(t, err)
 	expect.Equal(t, redirectTargetHits.Load(), 0)
 }
@@ -215,13 +354,7 @@ func Test_clientCredentials_SendRequest_UsesInstanceURL(t *testing.T) {
 	}))
 	defer loginServer.Close()
 
-	client, err := NewClientWithClientCredentials(
-		context.Background(),
-		loginServer.URL,
-		testClientID,
-		testClientSecret,
-		*http.DefaultClient,
-	)
+	client, err := newTestClient(t, context.Background(), loginServer.URL)
 	expect.ErrorNil(t, err)
 
 	statusCode, resBody, err := client.SendRequest(
@@ -285,13 +418,7 @@ func Test_clientCredentials_SendRequest_RefreshesOn401(t *testing.T) {
 	}))
 	defer loginServer.Close()
 
-	client, err := NewClientWithClientCredentials(
-		context.Background(),
-		loginServer.URL,
-		testClientID,
-		testClientSecret,
-		*http.DefaultClient,
-	)
+	client, err := newTestClient(t, context.Background(), loginServer.URL)
 	expect.ErrorNil(t, err)
 
 	statusCode, _, err := client.SendRequest(context.Background(), http.MethodGet, "/resource", nil, nil)
@@ -316,7 +443,7 @@ func Test_clientCredentials_SendRequest_RefreshesOn401(t *testing.T) {
 	expect.Equal(t, int(apiRequests.Load()), 3)
 }
 
-// A client whose construction failed to authorize re-authorizes on its next
+// A client whose first authorization attempt failed re-authorizes on its next
 // request rather than staying broken.
 func Test_clientCredentials_SendRequest_ReauthorizesAfterFailure(t *testing.T) {
 	var tokensIssued atomic.Int32
@@ -340,13 +467,7 @@ func Test_clientCredentials_SendRequest_ReauthorizesAfterFailure(t *testing.T) {
 	}))
 	defer loginServer.Close()
 
-	client, err := NewClientWithClientCredentials(
-		context.Background(),
-		loginServer.URL,
-		testClientID,
-		testClientSecret,
-		*http.DefaultClient,
-	)
+	client, err := newTestClient(t, context.Background(), loginServer.URL)
 	expect.ErrorNonNil(t, err)
 
 	statusCode, _, err := client.SendRequest(context.Background(), http.MethodGet, "/resource", nil, nil)
@@ -355,7 +476,7 @@ func Test_clientCredentials_SendRequest_ReauthorizesAfterFailure(t *testing.T) {
 	expect.Equal(t, int(tokensIssued.Load()), 2)
 }
 
-// SendRequest calls newAccessToken in two places: to recover from a prior
+// SendRequest calls NewAccessToken in two places: to recover from a prior
 // authorization failure, and to refresh after a 401. Both sites return the
 // authorization error without retrying the API request.
 func Test_clientCredentials_SendRequest_NewAccessTokenErrors(t *testing.T) {
@@ -366,12 +487,12 @@ func Test_clientCredentials_SendRequest_NewAccessTokenErrors(t *testing.T) {
 		apiHits    int
 	}
 	type testCase struct {
-		constructErrCheck expect.ErrorCheck
-		login             func(n int, apiURL string) (statusCode int, body string)
-		apiStatusCode     int
-		apiBody           string
-		want              expected
-		errCheck          expect.ErrorCheck
+		authErrCheck  expect.ErrorCheck
+		login         func(n int, apiURL string) (statusCode int, body string)
+		apiStatusCode int
+		apiBody       string
+		want          expected
+		errCheck      expect.ErrorCheck
 	}
 	run := func(name string, testCase testCase) {
 		t.Helper()
@@ -396,14 +517,8 @@ func Test_clientCredentials_SendRequest_NewAccessTokenErrors(t *testing.T) {
 			}))
 			defer loginServer.Close()
 
-			client, err := NewClientWithClientCredentials(
-				context.Background(),
-				loginServer.URL,
-				testClientID,
-				testClientSecret,
-				*http.DefaultClient,
-			)
-			testCase.constructErrCheck(t, err)
+			client, err := newTestClient(t, context.Background(), loginServer.URL)
+			testCase.authErrCheck(t, err)
 
 			statusCode, resBody, err := client.SendRequest(
 				context.Background(),
@@ -421,7 +536,7 @@ func Test_clientCredentials_SendRequest_NewAccessTokenErrors(t *testing.T) {
 	}
 
 	run("Error/ReauthorizeFails", testCase{
-		constructErrCheck: expect.ErrorNonNil,
+		authErrCheck: expect.ErrorNonNil,
 		login: func(int, string) (int, string) {
 			return http.StatusInternalServerError, ""
 		},
@@ -434,7 +549,7 @@ func Test_clientCredentials_SendRequest_NewAccessTokenErrors(t *testing.T) {
 		errCheck: expect.ErrorNonNil,
 	})
 	run("Error/RefreshOn401Fails", testCase{
-		constructErrCheck: expect.ErrorNil,
+		authErrCheck: expect.ErrorNil,
 		login: func(n int, apiURL string) (int, string) {
 			if n == 1 {
 				return http.StatusOK, tokenResponse("aStaleAccessToken", apiURL)
@@ -486,13 +601,7 @@ func Test_clientCredentials_SendRequest(t *testing.T) {
 			}))
 			defer loginServer.Close()
 
-			client, err := NewClientWithClientCredentials(
-				context.Background(),
-				loginServer.URL,
-				testClientID,
-				testClientSecret,
-				*http.DefaultClient,
-			)
+			client, err := newTestClient(t, context.Background(), loginServer.URL)
 			expect.ErrorNil(t, err)
 
 			statusCode, resBody, err := client.SendRequest(
@@ -568,13 +677,7 @@ func Test_clientCredentials_TokenErrorOmitsClientSecret(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := NewClientWithClientCredentials(
-		context.Background(),
-		server.URL,
-		testClientID,
-		testClientSecret,
-		*http.DefaultClient,
-	)
+	_, err := newTestClient(t, context.Background(), server.URL)
 	expect.ErrorNonNil(t, err)
 
 	if strings.Contains(err.Error(), testClientSecret) {
@@ -597,7 +700,7 @@ func Test_clientCredentials_ContextAppliesToTokenRequest(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := NewClientWithClientCredentials(ctx, server.URL, testClientID, testClientSecret, *http.DefaultClient)
+	_, err := newTestClient(t, ctx, server.URL)
 	expect.ErrorIs(context.Canceled)(t, err)
 	expect.Equal(t, int(tokensIssued.Load()), 0)
 }
