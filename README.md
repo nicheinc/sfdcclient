@@ -6,15 +6,29 @@
 ![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/nicheinc/sfdcclient)
 
 sfdcclient is a golang package implementing a pseudo-wrapper of an HTTP client,
-for making requests to salesforce's REST API through a connected app,
-making use of the [Salesforce OAuth 2.0 JWT Bearer Flow for Server-to-Server](https://help.salesforce.com/articleView?id=remoteaccess_oauth_jwt_flow.htm&type=5)
-authorization flow.
+for making requests to salesforce's REST API through a connected app.
+
+Two server-to-server authorization flows are supported, one constructor each:
+
+| Constructor | Flow |
+|---|---|
+| `NewClientWithJWTBearer` | [OAuth 2.0 JWT Bearer](https://help.salesforce.com/articleView?id=remoteaccess_oauth_jwt_flow.htm&type=5) |
+| `NewClientWithClientCredentials` | [OAuth 2.0 Client Credentials](https://help.salesforce.com/s/articleView?id=xcloud.remoteaccess_oauth_client_credentials_flow.htm&type=5) |
+
+Both return a client exposing the same `SendRequest` method, so consumers can
+declare a single one-method interface and pick a flow at construction time.
+
+Neither flow expires its cached token on a timer, since salesforce does not
+reliably report `expires_in`: a token is held until a request is rejected with a
+401, at which point it is renewed and the request retried once.
 
 ## Installation
 
 `go get https://github.com/nicheinc/sfdcclient`
 
 ## Example usage
+
+### JWT Bearer
 
 ```go
 package main
@@ -62,4 +76,57 @@ func main() {
 	fmt.Printf("\nResponse body: %s", string(resBody))
 }
 
+```
+
+### Client Credentials
+
+Unlike the JWT Bearer flow, the credentials belong to the connected app rather
+than to a user, so a packaged app's client ID and secret can be shared across
+organizations while the login URL varies per organization.
+
+Note the two distinct hosts: the token is requested from the organization's My
+Domain, and API requests then go to the `instance_url` salesforce returns with
+the token. The two are not always the same host, and the client handles the
+switch for you.
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/nicheinc/sfdcclient/v2"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// Constructing the client performs the token exchange, so an error here
+	// means authorization failed. The context bounds that exchange.
+	client, err := sfdcclient.NewClientWithClientCredentials(
+		ctx,
+		"https://example.my.salesforce.com", // the organization's My Domain
+		"your_connected_app_client_id",
+		"your_connected_app_client_secret",
+		http.Client{ // underlying HTTP client making all HTTP calls
+			Timeout: 5 * time.Second,
+		},
+	)
+	if err != nil {
+		log.Fatalf("Error initializing connected app salesforce client: %s", err)
+	}
+
+	url := "/services/data/v62.0/analytics/reports" // relative to the instance URL
+	statusCode, resBody, err := client.SendRequest(ctx, http.MethodGet, url, nil, nil)
+	if err != nil {
+		log.Fatalf("Error sending salesforce request: %s", err)
+	}
+
+	fmt.Printf("\nResponse status code: %d", statusCode) // -1 if an error is returned by the SendRequest call
+	fmt.Printf("\nResponse body: %s", string(resBody))
+}
 ```
