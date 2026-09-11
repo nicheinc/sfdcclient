@@ -307,6 +307,104 @@ func Test_clientCredentials_SendRequest_ReauthorizesAfterFailure(t *testing.T) {
 	expect.Equal(t, int(tokensIssued.Load()), 2)
 }
 
+// SendRequest calls newAccessToken in two places: to recover from a prior
+// authorization failure, and to refresh after a 401. Both sites return the
+// authorization error without retrying the API request.
+func Test_clientCredentials_SendRequest_NewAccessTokenErrors(t *testing.T) {
+	type expected struct {
+		statusCode int
+		resBody    []byte
+		tokens     int
+		apiHits    int
+	}
+	type testCase struct {
+		constructErrCheck expect.ErrorCheck
+		login             func(n int, apiURL string) (statusCode int, body string)
+		apiStatusCode     int
+		apiBody           string
+		want              expected
+		errCheck          expect.ErrorCheck
+	}
+	run := func(name string, testCase testCase) {
+		t.Helper()
+		t.Run(name, func(t *testing.T) {
+			t.Helper()
+
+			var tokensIssued, apiHits atomic.Int32
+
+			apiServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+				apiHits.Add(1)
+				rw.WriteHeader(testCase.apiStatusCode)
+				rw.Write([]byte(testCase.apiBody))
+			}))
+			defer apiServer.Close()
+
+			loginServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+				statusCode, body := testCase.login(int(tokensIssued.Add(1)), apiServer.URL)
+				rw.WriteHeader(statusCode)
+				if body != "" {
+					rw.Write([]byte(body))
+				}
+			}))
+			defer loginServer.Close()
+
+			client, err := NewClientWithClientCredentials(
+				context.Background(),
+				loginServer.URL,
+				testClientID,
+				testClientSecret,
+				*http.DefaultClient,
+			)
+			testCase.constructErrCheck(t, err)
+
+			statusCode, resBody, err := client.SendRequest(
+				context.Background(),
+				http.MethodGet,
+				"/resource",
+				nil,
+				nil,
+			)
+			expect.Equal(t, statusCode, testCase.want.statusCode)
+			expect.Equal(t, resBody, testCase.want.resBody)
+			testCase.errCheck(t, err)
+			expect.Equal(t, int(tokensIssued.Load()), testCase.want.tokens)
+			expect.Equal(t, int(apiHits.Load()), testCase.want.apiHits)
+		})
+	}
+
+	run("Error/ReauthorizeFails", testCase{
+		constructErrCheck: expect.ErrorNonNil,
+		login: func(int, string) (int, string) {
+			return http.StatusInternalServerError, ""
+		},
+		apiStatusCode: http.StatusOK,
+		apiBody:       `{"ok":true}`,
+		want: expected{
+			statusCode: -1,
+			tokens:     2,
+		},
+		errCheck: expect.ErrorNonNil,
+	})
+	run("Error/RefreshOn401Fails", testCase{
+		constructErrCheck: expect.ErrorNil,
+		login: func(n int, apiURL string) (int, string) {
+			if n == 1 {
+				return http.StatusOK, tokenResponse("aStaleAccessToken", apiURL)
+			}
+
+			return http.StatusInternalServerError, ""
+		},
+		apiStatusCode: http.StatusUnauthorized,
+		apiBody:       `[{"message":"Session expired or invalid","errorCode":"INVALID_SESSION_ID"}]`,
+		want: expected{
+			statusCode: -1,
+			tokens:     2,
+			apiHits:    1,
+		},
+		errCheck: expect.ErrorNonNil,
+	})
+}
+
 func Test_clientCredentials_SendRequest(t *testing.T) {
 	type expected struct {
 		statusCode int

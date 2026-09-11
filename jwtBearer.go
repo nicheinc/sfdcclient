@@ -3,6 +3,7 @@ package sfdcclient
 import (
 	"context"
 	"crypto/rsa"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -142,25 +143,19 @@ func (c *jwtBearer) SendRequest(ctx context.Context, method, relURL string, head
 	}
 	// Issue the request to salesforce
 	statusCode, resBody, err := c.sendRequest(ctx, method, url, headers, requestBody)
-	if err != nil {
-		// Check if the error is an actual salesforce API error
-		// see: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm
-		if _, ok := err.(*APIErrs); ok {
-			// If the status code returned is Unauthorized (401)
-			// Presumably, the current cached access token has expired,
-			// hence, we attempt to update the cached access token and retry the earlier request once
-			// see https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm
-			if statusCode == http.StatusUnauthorized {
-				errAuth := c.newAccessToken(ctx)
-				if errAuth != nil {
-					return -1, nil, errAuth
-				}
-				// Retry the original request
-				statusCode, resBody, err = c.sendRequest(ctx, method, url, headers, requestBody)
-				if err != nil {
-					return statusCode, resBody, err
-				}
-			}
+	// Only a salesforce API error carries a status code worth reacting to
+	// see: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm
+	if _, ok := errors.AsType[*APIErrs](err); ok && statusCode == http.StatusUnauthorized {
+		// Presumably, the current cached access token has expired,
+		// hence, we attempt to update the cached access token and retry the earlier request once
+		errAuth := c.newAccessToken(ctx)
+		if errAuth != nil {
+			return -1, nil, errAuth
+		}
+		// Retry the original request
+		statusCode, resBody, err = c.sendRequest(ctx, method, url, headers, requestBody)
+		if err != nil {
+			return statusCode, resBody, err
 		}
 	}
 
@@ -172,5 +167,5 @@ func (c *jwtBearer) sendRequest(ctx context.Context, method, url string, headers
 	accessToken := c.accessToken
 	c.accessTokenMutex.RUnlock()
 
-	return sendRequest(ctx, c.client, method, url, accessToken, headers, requestBody)
+	return sendRequestWithToken(ctx, c.client, method, url, accessToken, headers, requestBody)
 }

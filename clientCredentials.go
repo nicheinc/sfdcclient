@@ -140,19 +140,17 @@ func (c *clientCredentials) SendRequest(ctx context.Context, method, relURL stri
 	}
 
 	statusCode, resBody, err := c.sendRequest(ctx, method, relURL, headers, requestBody)
-	if err != nil {
-		// Only a salesforce API error carries a status code worth reacting to
-		// see: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm
-		if _, ok := err.(*APIErrs); ok && statusCode == http.StatusUnauthorized {
-			// Presumably the cached access token has expired
-			if errAuth := c.newAccessToken(ctx); errAuth != nil {
-				return -1, nil, errAuth
-			}
-
-			// Retry the original request, against whichever API base URL and
-			// token the refresh produced
-			statusCode, resBody, err = c.sendRequest(ctx, method, relURL, headers, requestBody)
+	// Only a salesforce API error carries a status code worth reacting to
+	// see: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/errorcodes.htm
+	if _, ok := errors.AsType[*APIErrs](err); ok && statusCode == http.StatusUnauthorized {
+		// Presumably the cached access token has expired
+		if errAuth := c.newAccessToken(ctx); errAuth != nil {
+			return -1, nil, errAuth
 		}
+
+		// Retry the original request, against whichever API base URL and
+		// token the refresh produced
+		statusCode, resBody, err = c.sendRequest(ctx, method, relURL, headers, requestBody)
 	}
 
 	return statusCode, resBody, err
@@ -163,5 +161,5 @@ func (c *clientCredentials) sendRequest(ctx context.Context, method, relURL stri
 	apiURL, accessToken := c.apiURL, c.accessToken
 	c.tokenMutex.RUnlock()
 
-	return sendRequest(ctx, c.client, method, apiURL+relURL, accessToken, headers, requestBody)
+	return sendRequestWithToken(ctx, c.client, method, apiURL+relURL, accessToken, headers, requestBody)
 }

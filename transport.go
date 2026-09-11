@@ -66,14 +66,14 @@ func requestToken(ctx context.Context, client http.Client, tokenURL, body string
 	return tokenRes, nil
 }
 
-// sendRequest sends an authorized request to Salesforce's REST API and
+// sendRequestWithToken sends an authorized request to Salesforce's REST API and
 // interprets the response.
 //
 // Every authorization flow in this package shares it: the flows differ in how
 // they obtain an access token, not in how they use one. The returned status
 // code is -1 when the request could not be sent or read at all. A response
 // carrying a Salesforce error payload comes back as an *APIErrs.
-func sendRequest(
+func sendRequestWithToken(
 	ctx context.Context,
 	client http.Client,
 	method, url, accessToken string,
