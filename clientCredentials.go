@@ -15,8 +15,9 @@ import (
 // surface as a confusing failure a request or two later.
 var ErrIncompleteTokenResponse = errors.New("salesforce token response is missing access_token or instance_url")
 
-// ErrInvalidLoginURL is returned by NewClientWithClientCredentials when
-// loginURL is not an https URL on the my.salesforce.com domain. Errors
+// ErrInvalidLoginURL is returned when a URL that must be an https Salesforce My
+// Domain is not. NewClientWithClientCredentials checks loginURL before any
+// request. NewAccessToken checks the instance_url from a granted token. Errors
 // describing why wrap it, so callers can match on it with errors.Is.
 var ErrInvalidLoginURL = errors.New("login URL must be an https URL whose host ends in " + salesforceDomainSuffix)
 
@@ -81,7 +82,7 @@ func NewClientWithClientCredentials(
 	loginURL, clientID, clientSecret string,
 	httpClient http.Client,
 ) (*clientCredentials, error) {
-	if err := validateLoginURL(loginURL); err != nil {
+	if err := validateSalesforceURL(loginURL); err != nil {
 		return nil, err
 	}
 
@@ -107,18 +108,19 @@ func newClientCredentials(loginURL, clientID, clientSecret string, httpClient ht
 	}
 }
 
-// validateLoginURL reports whether loginURL is an https URL on a salesforce My
-// Domain host.
+// validateSalesforceURL reports whether u is an https URL on a salesforce My
+// Domain host. It is used for the login URL and for the instance_url Salesforce
+// returns with a token.
 //
 // The host is matched by suffix on the parsed hostname rather than on the
 // string, since a string match would accept hosts that merely contain the
 // suffix: "example.my.salesforce.com.attacker.example" ends elsewhere,
 // "https://example.my.salesforce.com@attacker.example" names the host after
 // the @, and neither is salesforce.
-func validateLoginURL(loginURL string) error {
+func validateSalesforceURL(u string) error {
 	// The parse error quotes the input, which may carry credentials of its own
 	// in a userinfo component, so it is not wrapped.
-	parsed, err := url.Parse(loginURL)
+	parsed, err := url.Parse(u)
 	if err != nil {
 		return fmt.Errorf("%w: not a parseable URL", ErrInvalidLoginURL)
 	}
@@ -144,6 +146,8 @@ func validateLoginURL(loginURL string) error {
 
 // NewAccessToken requests an access token from the organization's My Domain,
 // updating the cached access token and API base URL if salesforce grants one.
+// instance_url is validated the same way as loginURL; an invalid one is not
+// cached.
 //
 // The client authorizes itself on construction and re-authorizes as needed
 // from SendRequest, so calling this is only necessary to refresh deliberately.
@@ -171,6 +175,10 @@ func (c *clientCredentials) NewAccessToken(ctx context.Context) error {
 	if tokenRes.AccessToken == "" || tokenRes.Instance == "" {
 		err = ErrIncompleteTokenResponse
 
+		return err
+	}
+
+	if err = validateSalesforceURL(tokenRes.Instance); err != nil {
 		return err
 	}
 

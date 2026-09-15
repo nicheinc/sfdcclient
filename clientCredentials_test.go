@@ -20,6 +20,12 @@ import (
 const (
 	testClientID     = "aConnectedAppClientID"
 	testClientSecret = "aConnectedAppClientSecret"
+
+	// testInstanceURL is a valid Salesforce API base URL. SendRequest tests
+	// cannot use an httptest server URL as instance_url, because NewAccessToken
+	// validates it the same way as a login URL.
+	testInstanceHost = "example.my.salesforce.com"
+	testInstanceURL  = "https://" + testInstanceHost
 )
 
 // tokenResponse is a token response body naming the API base URL salesforce
@@ -38,16 +44,51 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-// newTestClient returns a client authorized against loginURL, bypassing the
-// login URL validation the constructor performs, since a test server is not
+// newTestClientWithHTTP returns a client authorized against loginURL, bypassing
+// the login URL validation the constructor performs, since a test server is not
 // served from a my.salesforce.com host. Validation itself is covered by
 // Test_NewClientWithClientCredentials.
-func newTestClient(t *testing.T, ctx context.Context, loginURL string) (*clientCredentials, error) {
+func newTestClientWithHTTP(
+	t *testing.T,
+	ctx context.Context,
+	loginURL string,
+	httpClient http.Client,
+) (*clientCredentials, error) {
 	t.Helper()
 
-	client := newClientCredentials(loginURL, testClientID, testClientSecret, *http.DefaultClient)
+	client := newClientCredentials(loginURL, testClientID, testClientSecret, httpClient)
 
 	return client, client.NewAccessToken(ctx)
+}
+
+// rewriteInstanceTransport sends requests for testInstanceURL to apiServerURL,
+// which is an httptest server that cannot itself have a my.salesforce.com host.
+func rewriteInstanceTransport(t *testing.T, apiServerURL string) roundTripFunc {
+	t.Helper()
+
+	dest, err := url.Parse(apiServerURL)
+	expect.ErrorNil(t, err)
+
+	return func(req *http.Request) (*http.Response, error) {
+		if !strings.EqualFold(req.URL.Hostname(), testInstanceHost) {
+			return http.DefaultTransport.RoundTrip(req)
+		}
+
+		cloned := req.Clone(req.Context())
+		clonedURL := *req.URL
+		clonedURL.Scheme = dest.Scheme
+		clonedURL.Host = dest.Host
+		cloned.URL = &clonedURL
+		cloned.Host = dest.Host
+
+		return http.DefaultTransport.RoundTrip(cloned)
+	}
+}
+
+func httpClientForInstance(t *testing.T, apiServerURL string) http.Client {
+	t.Helper()
+
+	return http.Client{Transport: rewriteInstanceTransport(t, apiServerURL)}
 }
 
 // The constructor decides where the client secret is sent, so it validates
@@ -59,9 +100,10 @@ func Test_NewClientWithClientCredentials(t *testing.T) {
 		tokenRequests int
 	}
 	type testCase struct {
-		loginURL string
-		want     expected
-		errCheck expect.ErrorCheck
+		loginURL    string
+		instanceURL string
+		want        expected
+		errCheck    expect.ErrorCheck
 	}
 	run := func(name string, testCase testCase) {
 		t.Helper()
@@ -69,6 +111,11 @@ func Test_NewClientWithClientCredentials(t *testing.T) {
 			t.Helper()
 
 			var tokenRequests atomic.Int32
+
+			instanceURL := testCase.instanceURL
+			if instanceURL == "" {
+				instanceURL = testInstanceURL
+			}
 
 			httpClient := http.Client{
 				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -80,7 +127,7 @@ func Test_NewClientWithClientCredentials(t *testing.T) {
 						StatusCode: http.StatusOK,
 						Header:     http.Header{},
 						Body: io.NopCloser(strings.NewReader(
-							tokenResponse("aSalesforceAccessToken", "https://example.my.salesforce.com"),
+							tokenResponse("aSalesforceAccessToken", instanceURL),
 						)),
 					}, nil
 				}),
@@ -181,14 +228,29 @@ func Test_NewClientWithClientCredentials(t *testing.T) {
 		want:     expected{nilClient: true},
 		errCheck: expect.ErrorIs(ErrInvalidLoginURL),
 	})
+	// loginURL is sent the secret; instance_url is checked only after the
+	// token response, so a bad instance still produces a request and a client.
+	run("Error/InvalidInstanceURL", testCase{
+		loginURL:    "https://example.my.salesforce.com",
+		instanceURL: "https://attacker.example",
+		want:        expected{tokenRequests: 1},
+		errCheck:    expect.ErrorIs(ErrInvalidLoginURL),
+	})
 }
 
 // How the token response is interpreted, exercised against a test server and
 // so independent of the login URL validation the constructor performs.
+// instance_url is validated after a complete response; host/scheme cases for
+// the shared helper stay on Test_NewClientWithClientCredentials.
 func Test_clientCredentials_NewAccessToken(t *testing.T) {
+	type expected struct {
+		accessToken string
+		apiURL      string
+	}
 	type testCase struct {
 		statusCode int
 		body       string
+		want       expected
 		errCheck   expect.ErrorCheck
 	}
 	run := func(name string, testCase testCase) {
@@ -202,21 +264,28 @@ func Test_clientCredentials_NewAccessToken(t *testing.T) {
 			}))
 			defer server.Close()
 
-			_, err := newTestClient(t, context.Background(), server.URL)
+			client, err := newTestClientWithHTTP(t, context.Background(), server.URL, *http.DefaultClient)
 			testCase.errCheck(t, err)
+			testCase.errCheck(t, client.checkErr())
+			expect.Equal(t, client.accessToken, testCase.want.accessToken)
+			expect.Equal(t, client.apiURL, testCase.want.apiURL)
 		})
 	}
 
 	run("Success", testCase{
 		statusCode: http.StatusOK,
-		body:       tokenResponse("aSalesforceAccessToken", "https://example.my.salesforce.com"),
-		errCheck:   expect.ErrorNil,
+		body:       tokenResponse("aSalesforceAccessToken", testInstanceURL),
+		want: expected{
+			accessToken: "aSalesforceAccessToken",
+			apiURL:      testInstanceURL,
+		},
+		errCheck: expect.ErrorNil,
 	})
 	// A 2xx missing either field would otherwise fail confusingly a request or
 	// two later.
 	run("Error/MissingAccessToken", testCase{
 		statusCode: http.StatusOK,
-		body:       `{"instance_url":"https://example.my.salesforce.com"}`,
+		body:       `{"instance_url":"` + testInstanceURL + `"}`,
 		errCheck:   expect.ErrorIs(ErrIncompleteTokenResponse),
 	})
 	run("Error/MissingInstanceURL", testCase{
@@ -245,6 +314,33 @@ func Test_clientCredentials_NewAccessToken(t *testing.T) {
 	run("Error/UnexpectedOauthServerError", testCase{
 		statusCode: http.StatusInternalServerError,
 		errCheck:   expect.ErrorNonNil,
+	})
+	// instance_url is checked after a complete token response; a bad one must
+	// not be cached. The full host/scheme matrix lives on the constructor tests.
+	run("Error/UnparseableInstanceURL", testCase{
+		statusCode: http.StatusOK,
+		body:       tokenResponse("aSalesforceAccessToken", "https://example.my.salesforce.com/%zz"),
+		errCheck:   expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	run("Error/PlaintextInstanceURL", testCase{
+		statusCode: http.StatusOK,
+		body:       tokenResponse("aSalesforceAccessToken", "http://"+testInstanceHost),
+		errCheck:   expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	run("Error/UnrelatedInstanceHost", testCase{
+		statusCode: http.StatusOK,
+		body:       tokenResponse("aSalesforceAccessToken", "https://attacker.example"),
+		errCheck:   expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	run("Error/SuffixConfusionInstanceURL", testCase{
+		statusCode: http.StatusOK,
+		body:       tokenResponse("aSalesforceAccessToken", "https://example.my.salesforce.com.attacker.example"),
+		errCheck:   expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	run("Error/UserinfoInstanceURL", testCase{
+		statusCode: http.StatusOK,
+		body:       tokenResponse("aSalesforceAccessToken", "https://example.my.salesforce.com@attacker.example"),
+		errCheck:   expect.ErrorIs(ErrInvalidLoginURL),
 	})
 }
 
@@ -280,11 +376,11 @@ func Test_clientCredentials_NewAccessToken_TokenRequest(t *testing.T) {
 		mutex.Unlock()
 
 		rw.WriteHeader(http.StatusOK)
-		rw.Write([]byte(tokenResponse("aSalesforceAccessToken", "https://example.my.salesforce.com")))
+		rw.Write([]byte(tokenResponse("aSalesforceAccessToken", testInstanceURL)))
 	}))
 	defer server.Close()
 
-	_, err := newTestClient(t, context.Background(), server.URL)
+	_, err := newTestClientWithHTTP(t, context.Background(), server.URL, *http.DefaultClient)
 	expect.ErrorNil(t, err)
 
 	mutex.Lock()
@@ -315,7 +411,7 @@ func Test_clientCredentials_NewAccessToken_DoesNotFollowRedirects(t *testing.T) 
 		redirectTargetHits.Add(1)
 
 		rw.WriteHeader(http.StatusOK)
-		rw.Write([]byte(tokenResponse("aSalesforceAccessToken", "https://example.my.salesforce.com")))
+		rw.Write([]byte(tokenResponse("aSalesforceAccessToken", testInstanceURL)))
 	}))
 	defer redirectTarget.Close()
 
@@ -324,7 +420,7 @@ func Test_clientCredentials_NewAccessToken_DoesNotFollowRedirects(t *testing.T) 
 	}))
 	defer loginServer.Close()
 
-	_, err := newTestClient(t, context.Background(), loginServer.URL)
+	_, err := newTestClientWithHTTP(t, context.Background(), loginServer.URL, *http.DefaultClient)
 	expect.ErrorNonNil(t, err)
 	expect.Equal(t, redirectTargetHits.Load(), 0)
 }
@@ -350,11 +446,16 @@ func Test_clientCredentials_SendRequest_UsesInstanceURL(t *testing.T) {
 		loginHits.Add(1)
 
 		rw.WriteHeader(http.StatusOK)
-		rw.Write([]byte(tokenResponse("aSalesforceAccessToken", apiServer.URL)))
+		rw.Write([]byte(tokenResponse("aSalesforceAccessToken", testInstanceURL)))
 	}))
 	defer loginServer.Close()
 
-	client, err := newTestClient(t, context.Background(), loginServer.URL)
+	client, err := newTestClientWithHTTP(
+		t,
+		context.Background(),
+		loginServer.URL,
+		httpClientForInstance(t, apiServer.URL),
+	)
 	expect.ErrorNil(t, err)
 
 	statusCode, resBody, err := client.SendRequest(
@@ -414,11 +515,16 @@ func Test_clientCredentials_SendRequest_RefreshesOn401(t *testing.T) {
 		}
 
 		rw.WriteHeader(http.StatusOK)
-		rw.Write([]byte(tokenResponse(token, apiServer.URL)))
+		rw.Write([]byte(tokenResponse(token, testInstanceURL)))
 	}))
 	defer loginServer.Close()
 
-	client, err := newTestClient(t, context.Background(), loginServer.URL)
+	client, err := newTestClientWithHTTP(
+		t,
+		context.Background(),
+		loginServer.URL,
+		httpClientForInstance(t, apiServer.URL),
+	)
 	expect.ErrorNil(t, err)
 
 	statusCode, _, err := client.SendRequest(context.Background(), http.MethodGet, "/resource", nil, nil)
@@ -463,11 +569,16 @@ func Test_clientCredentials_SendRequest_ReauthorizesAfterFailure(t *testing.T) {
 		}
 
 		rw.WriteHeader(http.StatusOK)
-		rw.Write([]byte(tokenResponse("aSalesforceAccessToken", apiServer.URL)))
+		rw.Write([]byte(tokenResponse("aSalesforceAccessToken", testInstanceURL)))
 	}))
 	defer loginServer.Close()
 
-	client, err := newTestClient(t, context.Background(), loginServer.URL)
+	client, err := newTestClientWithHTTP(
+		t,
+		context.Background(),
+		loginServer.URL,
+		httpClientForInstance(t, apiServer.URL),
+	)
 	expect.ErrorNonNil(t, err)
 
 	statusCode, _, err := client.SendRequest(context.Background(), http.MethodGet, "/resource", nil, nil)
@@ -488,7 +599,7 @@ func Test_clientCredentials_SendRequest_NewAccessTokenErrors(t *testing.T) {
 	}
 	type testCase struct {
 		authErrCheck  expect.ErrorCheck
-		login         func(n int, apiURL string) (statusCode int, body string)
+		login         func(n int) (statusCode int, body string)
 		apiStatusCode int
 		apiBody       string
 		want          expected
@@ -509,7 +620,7 @@ func Test_clientCredentials_SendRequest_NewAccessTokenErrors(t *testing.T) {
 			defer apiServer.Close()
 
 			loginServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-				statusCode, body := testCase.login(int(tokensIssued.Add(1)), apiServer.URL)
+				statusCode, body := testCase.login(int(tokensIssued.Add(1)))
 				rw.WriteHeader(statusCode)
 				if body != "" {
 					rw.Write([]byte(body))
@@ -517,7 +628,12 @@ func Test_clientCredentials_SendRequest_NewAccessTokenErrors(t *testing.T) {
 			}))
 			defer loginServer.Close()
 
-			client, err := newTestClient(t, context.Background(), loginServer.URL)
+			client, err := newTestClientWithHTTP(
+				t,
+				context.Background(),
+				loginServer.URL,
+				httpClientForInstance(t, apiServer.URL),
+			)
 			testCase.authErrCheck(t, err)
 
 			statusCode, resBody, err := client.SendRequest(
@@ -537,7 +653,7 @@ func Test_clientCredentials_SendRequest_NewAccessTokenErrors(t *testing.T) {
 
 	run("Error/ReauthorizeFails", testCase{
 		authErrCheck: expect.ErrorNonNil,
-		login: func(int, string) (int, string) {
+		login: func(int) (int, string) {
 			return http.StatusInternalServerError, ""
 		},
 		apiStatusCode: http.StatusOK,
@@ -550,9 +666,9 @@ func Test_clientCredentials_SendRequest_NewAccessTokenErrors(t *testing.T) {
 	})
 	run("Error/RefreshOn401Fails", testCase{
 		authErrCheck: expect.ErrorNil,
-		login: func(n int, apiURL string) (int, string) {
+		login: func(n int) (int, string) {
 			if n == 1 {
-				return http.StatusOK, tokenResponse("aStaleAccessToken", apiURL)
+				return http.StatusOK, tokenResponse("aStaleAccessToken", testInstanceURL)
 			}
 
 			return http.StatusInternalServerError, ""
@@ -565,6 +681,37 @@ func Test_clientCredentials_SendRequest_NewAccessTokenErrors(t *testing.T) {
 			apiHits:    1,
 		},
 		errCheck: expect.ErrorNonNil,
+	})
+	run("Error/ReauthorizeInvalidInstanceURL", testCase{
+		authErrCheck: expect.ErrorIs(ErrInvalidLoginURL),
+		login: func(int) (int, string) {
+			return http.StatusOK, tokenResponse("aSalesforceAccessToken", "https://attacker.example")
+		},
+		apiStatusCode: http.StatusOK,
+		apiBody:       `{"ok":true}`,
+		want: expected{
+			statusCode: -1,
+			tokens:     2,
+		},
+		errCheck: expect.ErrorIs(ErrInvalidLoginURL),
+	})
+	run("Error/RefreshOn401InvalidInstanceURL", testCase{
+		authErrCheck: expect.ErrorNil,
+		login: func(n int) (int, string) {
+			if n == 1 {
+				return http.StatusOK, tokenResponse("aStaleAccessToken", testInstanceURL)
+			}
+
+			return http.StatusOK, tokenResponse("aFreshAccessToken", "https://attacker.example")
+		},
+		apiStatusCode: http.StatusUnauthorized,
+		apiBody:       `[{"message":"Session expired or invalid","errorCode":"INVALID_SESSION_ID"}]`,
+		want: expected{
+			statusCode: -1,
+			tokens:     2,
+			apiHits:    1,
+		},
+		errCheck: expect.ErrorIs(ErrInvalidLoginURL),
 	})
 }
 
@@ -597,11 +744,16 @@ func Test_clientCredentials_SendRequest(t *testing.T) {
 
 			loginServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 				rw.WriteHeader(http.StatusOK)
-				rw.Write([]byte(tokenResponse("aSalesforceAccessToken", apiServer.URL)))
+				rw.Write([]byte(tokenResponse("aSalesforceAccessToken", testInstanceURL)))
 			}))
 			defer loginServer.Close()
 
-			client, err := newTestClient(t, context.Background(), loginServer.URL)
+			client, err := newTestClientWithHTTP(
+				t,
+				context.Background(),
+				loginServer.URL,
+				httpClientForInstance(t, apiServer.URL),
+			)
 			expect.ErrorNil(t, err)
 
 			statusCode, resBody, err := client.SendRequest(
@@ -677,7 +829,7 @@ func Test_clientCredentials_TokenErrorOmitsClientSecret(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := newTestClient(t, context.Background(), server.URL)
+	_, err := newTestClientWithHTTP(t, context.Background(), server.URL, *http.DefaultClient)
 	expect.ErrorNonNil(t, err)
 
 	if strings.Contains(err.Error(), testClientSecret) {
@@ -693,14 +845,14 @@ func Test_clientCredentials_ContextAppliesToTokenRequest(t *testing.T) {
 		tokensIssued.Add(1)
 
 		rw.WriteHeader(http.StatusOK)
-		rw.Write([]byte(tokenResponse("aSalesforceAccessToken", "https://example.my.salesforce.com")))
+		rw.Write([]byte(tokenResponse("aSalesforceAccessToken", testInstanceURL)))
 	}))
 	defer server.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := newTestClient(t, ctx, server.URL)
+	_, err := newTestClientWithHTTP(t, ctx, server.URL, *http.DefaultClient)
 	expect.ErrorIs(context.Canceled)(t, err)
 	expect.Equal(t, int(tokensIssued.Load()), 0)
 }
