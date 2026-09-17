@@ -82,6 +82,11 @@ Domain, and API requests then go to the `instance_url` salesforce returns with
 the token. The two are not always the same host, and the client handles the
 switch for you.
 
+Both hosts are validated to be an `https` Salesforce My Domain (a host ending
+in `.my.salesforce.com`) before use. An invalid login URL is rejected as
+`ErrInvalidLoginURL` without making a request; an invalid `instance_url` from
+the token response is rejected the same way. Check for it with `errors.Is`.
+
 ```go
 package main
 
