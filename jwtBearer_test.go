@@ -174,7 +174,7 @@ func Test_jwtBearer_newAccessToken(t *testing.T) {
 				accessTokenMutex: testCase.fields.accessTokenMutex,
 				errMutex:         testCase.fields.errMutex,
 			}
-			err := c.newAccessToken()
+			err := c.newAccessToken(context.Background())
 			testCase.errCheck(t, err)
 		})
 	}
